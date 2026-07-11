@@ -803,6 +803,7 @@ function BotConfig() {
     toast.success("تم تحديث مفتاح Mistral — يعمل البوت به فوراً");
   }
 
+  if (!settings) return <div className="text-muted-foreground text-sm">Loading…</div>;
 
   return (
     <div className="grid md:grid-cols-3 gap-6">
