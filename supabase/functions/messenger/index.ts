@@ -777,12 +777,24 @@ async function ensureImageAgent(key: string): Promise<string | null> {
   }
 }
 
-async function generateImage(senderId: string, prompt: string, admin: any): Promise<string> {
+async function generateImage(senderId: string, prompt: string, admin: any, arabicText: string = ""): Promise<string> {
   const key = Deno.env.get("MISTRAL_API_KEY");
   const pageToken = Deno.env.get("FB_PAGE_ACCESS_TOKEN");
   if (!key) return JSON.stringify({ ok: false, error: "no_image_provider" });
   if (!pageToken) return JSON.stringify({ ok: false, error: "fb_token_missing" });
   if (!prompt.trim()) return JSON.stringify({ ok: false, error: "empty_prompt" });
+
+  // Strip any Arabic characters from prompt (Mistral image model mangles them);
+  // real Arabic is drawn as an overlay via arabicText.
+  const hasArabic = /[\u0600-\u06FF]/.test(prompt);
+  let cleanPrompt = prompt;
+  if (hasArabic) {
+    cleanPrompt = prompt.replace(/[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]+/g, "").replace(/\s+/g, " ").trim();
+    if (!cleanPrompt) cleanPrompt = "a clean visual scene";
+  }
+  if (arabicText.trim()) {
+    cleanPrompt += ". Leave a clean empty horizontal banner area at the bottom of the image (about 20% of height) with a plain background — no text, no letters, no writing anywhere.";
+  }
 
   const agentId = await ensureImageAgent(key);
   if (!agentId) return JSON.stringify({ ok: false, error: "agent_unavailable" });
