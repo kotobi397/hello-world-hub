@@ -1105,14 +1105,49 @@ async function handleEvent(ev: any, pageId: string | null) {
   }
 
   const basePrompt = await pickPersona(admin, pageId, settings.system_prompt);
+
+  // Length preference: admin default, optionally overridden by user memory when allow_customer_length_config is on.
+  let effectiveLength: string = (settings as any).answer_length || "normal";
+  if ((settings as any).allow_customer_length_config) {
+    const pref = (memRows ?? []).find((m: any) => {
+      const k = String(m.key || "").toLowerCase();
+      return k === "preferred_length" || k === "answer_length" || k === "response_length";
+    });
+    const v = String(pref?.value || "").toLowerCase();
+    if (v.includes("short") || v.includes("قصير") || v.includes("مختصر")) effectiveLength = "short";
+    else if (v.includes("long") || v.includes("طويل") || v.includes("مفصل") || v.includes("تفصيل")) effectiveLength = "long";
+    else if (v.includes("normal") || v.includes("عادي") || v.includes("طبيعي") || v.includes("standard")) effectiveLength = "normal";
+  }
+  const lengthInstruction =
+    effectiveLength === "short"
+      ? "طول الإجابة: قصير جداً. لخّص في 1-2 جملة قصيرة (أقل من 40 كلمة). لا تشرح إلا إذا طُلب."
+      : effectiveLength === "long"
+      ? "طول الإجابة: طويل ومفصّل. قدّم شرحاً وافياً بأقسام أو نقاط عند الحاجة (150-400 كلمة إن كان الموضوع يستحق)."
+      : "طول الإجابة: طبيعي ومتوسط. أجب بوضوح دون إسهاب مبالغ (تقريباً 40-120 كلمة).";
+
+  const tone = (settings as any).tone || "professional";
+  const toneInstruction =
+    tone === "gentle" ? "النغمة: لطيفة، هادئة، مطمئنة، مهذبة."
+    : tone === "direct" ? "النغمة: مباشرة وموجزة. صلب الموضوع فوراً بدون مقدمات أو دردشة."
+    : tone === "empathetic" ? "النغمة: متعاطفة، أظهر الاهتمام والفهم لمشاعر المستخدم قبل تقديم الحل."
+    : tone === "friendly" ? "النغمة: ودّية ودافئة كصديق، طبيعية وشخصية، مع لمسة مرح خفيف عند المناسب."
+    : "النغمة: مهنية واضحة ومهذبة.";
+
+  const customerConfigInstruction = (settings as any).allow_customer_length_config
+    ? "\n- إذا طلب المستخدم تغيير طول ردودك (\"اجعل ردودك أقصر/أطول\"، \"answer short/long\"...) استخدم save_memory بمفتاح preferred_length وقيمة short أو normal أو long، ثم تابع بالطول الجديد."
+    : "";
+
   const systemPrompt = `اسمك هو "SolveBot GPT". إذا سألك أحد عن اسمك أو من أنت، عرّف نفسك بهذا الاسم دائماً. لا تذكر أنك Mistral أو أي نموذج آخر.
 
 ${basePrompt}
 
 ${memBlock}
 
+${toneInstruction}
+${lengthInstruction}
+
 تعليمات مهمة:
-- لا تنسَ أبداً أي معلومة عن المستخدم. كلما عرفت شيئاً جديداً (اسم، تفضيل، هدف، لغة، مهنة...)، استخدم أداة save_memory فوراً.
+- لا تنسَ أبداً أي معلومة عن المستخدم. كلما عرفت شيئاً جديداً (اسم، تفضيل، هدف، لغة، مهنة...)، استخدم أداة save_memory فوراً.${customerConfigInstruction}
 - إذا طلب المستخدم تذكيراً ("ذكّرني بعد X دقائق") استخدم set_reminder.
 - لأي عملية حسابية استخدم أداة calculator بدل التخمين.
 - لتحويل العملات استخدم convert_currency (أسعار حقيقية محدّثة).
@@ -1128,6 +1163,7 @@ ${memBlock}
   4) إذا طلب إكمال رواية سابقة استخدم list_my_novels ثم resume_novel قبل الكتابة لتلتقط الخيط.
   5) لا تكرر أحداثاً سبق كتابتها واحترم شخصيات وأسلوب الرواية المحفوظ.
 - أجب دائماً بنفس لغة المستخدم. كن دقيقاً ومفيداً.
+- التزم بالنغمة والطول المحددين أعلاه في كل الردود (إلا الروايات/الأكواد فتتبع طبيعتها).
 - استخدم الذاكرة أعلاه في إجاباتك بشكل طبيعي.`;
 
   const chatMessages: any[] = [{ role: "system", content: systemPrompt }];

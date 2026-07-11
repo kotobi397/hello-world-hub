@@ -16,24 +16,33 @@ export type Database = {
     Tables: {
       bot_settings: {
         Row: {
+          allow_customer_length_config: boolean
+          answer_length: string
           created_at: string
           id: string
           is_active: boolean
           system_prompt: string
+          tone: string
           updated_at: string
         }
         Insert: {
+          allow_customer_length_config?: boolean
+          answer_length?: string
           created_at?: string
           id?: string
           is_active?: boolean
           system_prompt?: string
+          tone?: string
           updated_at?: string
         }
         Update: {
+          allow_customer_length_config?: boolean
+          answer_length?: string
           created_at?: string
           id?: string
           is_active?: boolean
           system_prompt?: string
+          tone?: string
           updated_at?: string
         }
         Relationships: []
