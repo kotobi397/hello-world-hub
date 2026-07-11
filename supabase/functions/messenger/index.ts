@@ -47,6 +47,45 @@ async function getMistralKey(): Promise<string | null> {
   return value;
 }
 
+// Ask Mistral to judge whether the message contains insults / profanity /
+// hate speech / harassment / sexual harassment aimed at the bot or others.
+// Returns `null` for safe content, `{ reason }` when the message should trigger a block.
+async function moderateMessage(text: string): Promise<{ reason: string } | null> {
+  const key = await getMistralKey();
+  if (!key) return null; // fail-open if key missing, to avoid false blocks
+  try {
+    const res = await fetch(MISTRAL_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: "mistral-small-latest",
+        temperature: 0,
+        max_tokens: 60,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              'أنت مصنّف محتوى صارم. اقرأ رسالة المستخدم واحكم فقط: هل تحوي شتائم أو سبّاً أو إهانة أو تحرشاً أو خطاباً عدائياً/عنصرياً/طائفياً/جنسياً فاحشاً موجّهاً للبوت أو لأي شخص؟ الشكاوى العادية والغضب المهذّب والانتقاد ليست إهانة. أعد JSON فقط بالشكل: {"unsafe": true|false, "reason": "insult|profanity|harassment|hate|sexual|other"}. لا شيء آخر.',
+          },
+          { role: "user", content: text.slice(0, 1000) },
+        ],
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const raw = data?.choices?.[0]?.message?.content;
+    if (!raw) return null;
+    let parsed: any = null;
+    try { parsed = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return null; }
+    if (parsed?.unsafe === true) return { reason: String(parsed.reason || "inappropriate_language") };
+    return null;
+  } catch (e) {
+    console.error("[messenger] moderation error", e);
+    return null;
+  }
+}
+
 // Fetch Messenger user profile from Graph API and upsert into facebook_profiles.
 // Skips when a fresh (<7 days) profile is already cached.
 async function ensureFbProfile(admin: any, senderId: string, pageId: string | null) {
