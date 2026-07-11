@@ -743,11 +743,23 @@ const TONE_OPTIONS: { value: BotSettings["tone"]; label: string; desc: string }[
 function BotConfig() {
   const [settings, setSettings] = useState<BotSettings | null>(null);
   const [saving, setSaving] = useState(false);
+  const [mistralKey, setMistralKey] = useState("");
+  const [mistralKeyMasked, setMistralKeyMasked] = useState<string | null>(null);
+  const [mistralConfigId, setMistralConfigId] = useState<string | null>(null);
+  const [savingKey, setSavingKey] = useState(false);
+  const [showKey, setShowKey] = useState(false);
   const webhookUrl = getWebhookUrl();
 
   useEffect(() => {
     supabase.from("bot_settings").select("*").limit(1).maybeSingle()
       .then(({ data }) => { if (data) setSettings(data as BotSettings); });
+    (supabase.from("app_config" as any) as any).select("id, mistral_api_key").limit(1).maybeSingle()
+      .then(({ data }: any) => {
+        if (!data) return;
+        setMistralConfigId(data.id);
+        const k = data.mistral_api_key as string | null;
+        if (k) setMistralKeyMasked(`${k.slice(0, 4)}••••••••${k.slice(-4)}`);
+      });
   }, []);
 
   async function save() {
@@ -765,6 +777,30 @@ function BotConfig() {
     setSaving(false);
     if (error) return toast.error(error.message);
     toast.success("تم حفظ الإعدادات — البوت يعمل بها فوراً");
+  }
+
+  async function saveMistralKey() {
+    const value = mistralKey.trim();
+    if (!value) return toast.error("أدخل مفتاح Mistral API");
+    setSavingKey(true);
+    let error: any = null;
+    if (mistralConfigId) {
+      const res = await (supabase.from("app_config" as any) as any)
+        .update({ mistral_api_key: value, updated_at: new Date().toISOString() })
+        .eq("id", mistralConfigId);
+      error = res.error;
+    } else {
+      const res = await (supabase.from("app_config" as any) as any)
+        .insert({ mistral_api_key: value }).select("id").maybeSingle();
+      error = res.error;
+      if (res.data?.id) setMistralConfigId(res.data.id);
+    }
+    setSavingKey(false);
+    if (error) return toast.error(error.message);
+    setMistralKeyMasked(`${value.slice(0, 4)}••••••••${value.slice(-4)}`);
+    setMistralKey("");
+    setShowKey(false);
+    toast.success("تم تحديث مفتاح Mistral — يعمل البوت به فوراً");
   }
 
   if (!settings) return <div className="text-muted-foreground text-sm">Loading…</div>;
@@ -855,6 +891,46 @@ function BotConfig() {
         <Button onClick={save} disabled={saving}>{saving ? "جارٍ الحفظ…" : "حفظ الإعدادات"}</Button>
       </Card>
 
+      <div className="space-y-6">
+      <Card className="p-6 space-y-4 h-fit">
+        <div>
+          <h3 className="font-semibold mb-1">مفتاح Mistral API</h3>
+          <p className="text-xs text-muted-foreground">
+            حدّث المفتاح مباشرة من هنا — لا حاجة للدخول إلى Supabase. يعمل البوت بالمفتاح الجديد فوراً.
+          </p>
+        </div>
+        {mistralKeyMasked && (
+          <div className="text-xs">
+            <Label className="text-xs">المفتاح الحالي</Label>
+            <code className="block mt-1 p-2 bg-muted rounded font-mono break-all">{mistralKeyMasked}</code>
+          </div>
+        )}
+        <div className="space-y-2">
+          <Label className="text-xs">
+            {mistralKeyMasked ? "مفتاح جديد (يستبدل الحالي)" : "أدخل مفتاح Mistral API"}
+          </Label>
+          <div className="flex gap-2">
+            <Input
+              type={showKey ? "text" : "password"}
+              value={mistralKey}
+              onChange={(e) => setMistralKey(e.target.value)}
+              placeholder="…"
+              className="font-mono text-xs"
+              autoComplete="off"
+            />
+            <Button size="sm" variant="outline" type="button" onClick={() => setShowKey(v => !v)}>
+              {showKey ? "إخفاء" : "إظهار"}
+            </Button>
+          </div>
+          <Button size="sm" onClick={saveMistralKey} disabled={savingKey || !mistralKey.trim()} className="w-full">
+            {savingKey ? "جارٍ الحفظ…" : "حفظ المفتاح"}
+          </Button>
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            يُخزَّن المفتاح بأمان في قاعدة البيانات ومحمي بصلاحيات المشرف فقط.
+          </p>
+        </div>
+      </Card>
+
       <Card className="p-6 space-y-4 h-fit">
         <div>
           <h3 className="font-semibold mb-1">Facebook Webhook setup</h3>
@@ -885,6 +961,7 @@ function BotConfig() {
           <div>✓ <Badge variant="secondary">FB_VERIFY_TOKEN</Badge></div>
         </div>
       </Card>
+      </div>
     </div>
   );
 }

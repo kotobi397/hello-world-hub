@@ -30,6 +30,23 @@ function getAdmin() {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
+// Mistral API key: prefer value stored in `app_config` (editable from admin UI),
+// fall back to the MISTRAL_API_KEY env secret. Cached for 30s per instance.
+let _mistralKeyCache: { value: string | null; expiresAt: number } | null = null;
+async function getMistralKey(): Promise<string | null> {
+  if (_mistralKeyCache && _mistralKeyCache.expiresAt > Date.now()) return _mistralKeyCache.value;
+  let value: string | null = null;
+  try {
+    const admin = getAdmin();
+    const { data } = await admin.from("app_config").select("mistral_api_key").limit(1).maybeSingle();
+    const dbKey = (data as any)?.mistral_api_key;
+    if (dbKey && typeof dbKey === "string" && dbKey.trim()) value = dbKey.trim();
+  } catch (_e) { /* ignore, fall back to env */ }
+  if (!value) value = Deno.env.get("MISTRAL_API_KEY") ?? null;
+  _mistralKeyCache = { value, expiresAt: Date.now() + 30_000 };
+  return value;
+}
+
 // Fetch Messenger user profile from Graph API and upsert into facebook_profiles.
 // Skips when a fresh (<7 days) profile is already cached.
 async function ensureFbProfile(admin: any, senderId: string, pageId: string | null) {
@@ -537,7 +554,7 @@ function weatherCodeText(code: number): string {
 }
 
 async function translateText(text: string, target: string): Promise<string> {
-  const key = Deno.env.get("MISTRAL_API_KEY");
+  const key = await getMistralKey();
   if (!key) return JSON.stringify({ ok: false, error: "no_translator" });
   try {
     const res = await fetch(MISTRAL_URL, {
@@ -778,7 +795,7 @@ async function ensureImageAgent(key: string): Promise<string | null> {
 }
 
 async function generateImage(senderId: string, prompt: string, admin: any, arabicText: string = ""): Promise<string> {
-  const key = Deno.env.get("MISTRAL_API_KEY");
+  const key = await getMistralKey();
   const pageToken = Deno.env.get("FB_PAGE_ACCESS_TOKEN");
   if (!key) return JSON.stringify({ ok: false, error: "no_image_provider" });
   if (!pageToken) return JSON.stringify({ ok: false, error: "fb_token_missing" });
@@ -1249,7 +1266,7 @@ async function transcribeAudio(url: string): Promise<string | null> {
 }
 
 async function runWithTools(messages: any[], model: string, senderId: string, admin: any): Promise<string> {
-  const key = Deno.env.get("MISTRAL_API_KEY");
+  const key = await getMistralKey();
   if (!key) { console.error("[messenger] MISTRAL_API_KEY missing"); return "الخدمة غير متاحة حالياً."; }
 
   let convo = messages.slice();
@@ -1443,7 +1460,7 @@ async function ensureBasicWebSearchAgent(key: string): Promise<string | null> {
 }
 
 async function mistralWebSearch(query: string): Promise<string | null> {
-  const key = Deno.env.get("MISTRAL_API_KEY");
+  const key = await getMistralKey();
   if (!key) return null;
   const agentId = await ensureWebSearchAgent(key);
   if (!agentId) return null;
