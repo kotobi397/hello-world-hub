@@ -554,7 +554,7 @@ function weatherCodeText(code: number): string {
 }
 
 async function translateText(text: string, target: string): Promise<string> {
-  const key = Deno.env.get("MISTRAL_API_KEY");
+  const key = await getMistralKey();
   if (!key) return JSON.stringify({ ok: false, error: "no_translator" });
   try {
     const res = await fetch(MISTRAL_URL, {
@@ -795,7 +795,7 @@ async function ensureImageAgent(key: string): Promise<string | null> {
 }
 
 async function generateImage(senderId: string, prompt: string, admin: any, arabicText: string = ""): Promise<string> {
-  const key = Deno.env.get("MISTRAL_API_KEY");
+  const key = await getMistralKey();
   const pageToken = Deno.env.get("FB_PAGE_ACCESS_TOKEN");
   if (!key) return JSON.stringify({ ok: false, error: "no_image_provider" });
   if (!pageToken) return JSON.stringify({ ok: false, error: "fb_token_missing" });
@@ -1266,7 +1266,7 @@ async function transcribeAudio(url: string): Promise<string | null> {
 }
 
 async function runWithTools(messages: any[], model: string, senderId: string, admin: any): Promise<string> {
-  const key = Deno.env.get("MISTRAL_API_KEY");
+  const key = await getMistralKey();
   if (!key) { console.error("[messenger] MISTRAL_API_KEY missing"); return "الخدمة غير متاحة حالياً."; }
 
   let convo = messages.slice();
@@ -1460,7 +1460,7 @@ async function ensureBasicWebSearchAgent(key: string): Promise<string | null> {
 }
 
 async function mistralWebSearch(query: string): Promise<string | null> {
-  const key = Deno.env.get("MISTRAL_API_KEY");
+  const key = await getMistralKey();
   if (!key) return null;
   const agentId = await ensureWebSearchAgent(key);
   if (!agentId) return null;
