@@ -1,6 +1,8 @@
 // Facebook Messenger webhook — Mistral + tools + long memory + reminders.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { initWasm as initResvg, Resvg } from "https://esm.sh/@resvg/resvg-wasm@2.6.2";
+import { Image } from "https://deno.land/x/imagescript@1.2.17/mod.ts";
 
 const MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions";
 const FB_API = "https://graph.facebook.com/v19.0/me/messages";
