@@ -180,9 +180,16 @@ function Analytics() {
       const rows = rpcData?.hourly ?? [];
       const map = new Map(rows.map(r => [r.hour, r]));
       const out: { date: string; bot: number; user: number; sessions: number }[] = [];
-      const now = new Date();
+      // Align to whole UTC hours matching the SQL series
+      const nowUtc = new Date();
+      const currentHourUtc = Date.UTC(
+        nowUtc.getUTCFullYear(),
+        nowUtc.getUTCMonth(),
+        nowUtc.getUTCDate(),
+        nowUtc.getUTCHours(),
+      );
       for (let i = 23; i >= 0; i--) {
-        const d = new Date(now.getTime() - i * 3600_000);
+        const d = new Date(currentHourUtc - i * 3600_000);
         const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}:00`;
         const row = map.get(key);
         out.push({
@@ -197,13 +204,16 @@ function Analytics() {
     const daily = rpcData?.daily ?? [];
     const map = new Map(daily.map(d => [d.day, d]));
     const out: { date: string; bot: number; user: number; sessions: number }[] = [];
+    const nowUtc = new Date();
+    const todayUtc = Date.UTC(nowUtc.getUTCFullYear(), nowUtc.getUTCMonth(), nowUtc.getUTCDate());
     for (let i = period - 1; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 86400_000).toISOString().slice(0, 10);
+      const d = new Date(todayUtc - i * 86400_000).toISOString().slice(0, 10);
       const row = map.get(d);
       out.push({ date: d.slice(5), bot: Number(row?.bot ?? 0), user: Number(row?.user ?? 0), sessions: Number(row?.sessions ?? 0) });
     }
     return out;
   }, [rpcData, period]);
+
 
   const bot = rpcData?.bot ?? 0;
   const usr = rpcData?.user ?? 0;
