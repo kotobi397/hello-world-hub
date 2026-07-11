@@ -717,25 +717,54 @@ function SearchExport() {
   );
 }
 
+type BotSettings = {
+  id: string;
+  system_prompt: string;
+  is_active: boolean;
+  answer_length: "short" | "normal" | "long";
+  tone: "professional" | "gentle" | "direct" | "empathetic" | "friendly";
+  allow_customer_length_config: boolean;
+};
+
+const LENGTH_OPTIONS: { value: BotSettings["answer_length"]; label: string; desc: string }[] = [
+  { value: "short", label: "قصير", desc: "ملخص موجز، أقصر من التنسيق العادي." },
+  { value: "normal", label: "طبيعي", desc: "التنسيق القياسي المتوازن." },
+  { value: "long", label: "طويل", desc: "أكثر تفصيلاً وشرحاً من العادي." },
+];
+
+const TONE_OPTIONS: { value: BotSettings["tone"]; label: string; desc: string }[] = [
+  { value: "professional", label: "محترف", desc: "لهجة واضحة ومهذبة ومهنية — مناسبة لمعظم الحالات." },
+  { value: "gentle", label: "لطيف", desc: "نبرة هادئة ومهذبة تجعل الردود تبدو لطيفة ومطمئنة." },
+  { value: "direct", label: "مباشر", desc: "ردود قصيرة ومباشرة في صلب الموضوع، بدون حشو." },
+  { value: "empathetic", label: "متعاطف", desc: "يُظهر الرعاية والفهم العاطفي فيشعر المستخدم بأنه مسموع." },
+  { value: "friendly", label: "ودّي", desc: "دفء وود يجعل المحادثة طبيعية وشخصية." },
+];
+
 function BotConfig() {
-  const [settings, setSettings] = useState<{ id: string; system_prompt: string; is_active: boolean } | null>(null);
+  const [settings, setSettings] = useState<BotSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const webhookUrl = getWebhookUrl();
 
   useEffect(() => {
     supabase.from("bot_settings").select("*").limit(1).maybeSingle()
-      .then(({ data }) => { if (data) setSettings(data); });
+      .then(({ data }) => { if (data) setSettings(data as BotSettings); });
   }, []);
 
   async function save() {
     if (!settings) return;
     setSaving(true);
     const { error } = await supabase.from("bot_settings")
-      .update({ system_prompt: settings.system_prompt, is_active: settings.is_active })
+      .update({
+        system_prompt: settings.system_prompt,
+        is_active: settings.is_active,
+        answer_length: settings.answer_length,
+        tone: settings.tone,
+        allow_customer_length_config: settings.allow_customer_length_config,
+      })
       .eq("id", settings.id);
     setSaving(false);
     if (error) return toast.error(error.message);
-    toast.success("Settings saved");
+    toast.success("تم حفظ الإعدادات — البوت يعمل بها فوراً");
   }
 
   if (!settings) return <div className="text-muted-foreground text-sm">Loading…</div>;
@@ -752,14 +781,78 @@ function BotConfig() {
             {settings.is_active ? "On — Mistral AI replies automatically." : "Off — messages logged, no replies (manual)."}
           </p>
         </div>
-        <div>
+
+        <div className="pt-6 border-t space-y-3">
+          <div>
+            <Label className="text-base">طول إجابة الروبوت الافتراضي</Label>
+            <p className="text-sm text-muted-foreground mt-1">يُطبَّق فوراً على كل الردود التلقائية.</p>
+          </div>
+          <div className="grid sm:grid-cols-3 gap-3">
+            {LENGTH_OPTIONS.map(opt => {
+              const active = settings.answer_length === opt.value;
+              return (
+                <button key={opt.value} type="button"
+                  onClick={() => setSettings({ ...settings, answer_length: opt.value })}
+                  className={`text-right p-4 rounded-xl border transition-all ${active
+                    ? "border-indigo-500 bg-indigo-500/10 ring-2 ring-indigo-500/30 shadow-sm"
+                    : "border-border/60 hover:border-border hover:bg-muted/40"}`}>
+                  <div className="font-semibold mb-1 flex items-center justify-between">
+                    <span>{opt.label}</span>
+                    {active && <Badge className="text-[10px]">مُفعّل</Badge>}
+                  </div>
+                  <div className="text-xs text-muted-foreground leading-relaxed">{opt.desc}</div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex items-start justify-between gap-4 p-4 rounded-lg bg-muted/30 border border-border/60 mt-2">
+            <div>
+              <Label className="text-sm">السماح للعميل بتكوين طول إجابة الروبوت</Label>
+              <p className="text-xs text-muted-foreground mt-1">
+                عند التفعيل، يمكن للعميل أن يطلب من الروبوت تغيير طول الردود ("اجعل ردودك أقصر/أطول") ويلتزم بذلك. عند التعطيل، يُستخدم الإعداد الافتراضي أعلاه فقط.
+              </p>
+            </div>
+            <Switch
+              checked={settings.allow_customer_length_config}
+              onCheckedChange={(v) => setSettings({ ...settings, allow_customer_length_config: v })}
+            />
+          </div>
+        </div>
+
+        <div className="pt-6 border-t space-y-3">
+          <div>
+            <Label className="text-base">نغمة الروبوت الافتراضية</Label>
+            <p className="text-sm text-muted-foreground mt-1">تحدد أسلوب البوت في كل الردود.</p>
+          </div>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {TONE_OPTIONS.map(opt => {
+              const active = settings.tone === opt.value;
+              return (
+                <button key={opt.value} type="button"
+                  onClick={() => setSettings({ ...settings, tone: opt.value })}
+                  className={`text-right p-4 rounded-xl border transition-all ${active
+                    ? "border-emerald-500 bg-emerald-500/10 ring-2 ring-emerald-500/30 shadow-sm"
+                    : "border-border/60 hover:border-border hover:bg-muted/40"}`}>
+                  <div className="font-semibold mb-1 flex items-center justify-between">
+                    <span>{opt.label}</span>
+                    {active && <Badge className="text-[10px]" variant="secondary">مُفعّل</Badge>}
+                  </div>
+                  <div className="text-xs text-muted-foreground leading-relaxed">{opt.desc}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="pt-6 border-t">
           <Label htmlFor="prompt" className="text-base">Default System prompt</Label>
           <p className="text-sm text-muted-foreground mb-3">Fallback persona used when no custom Persona matches.</p>
           <Textarea id="prompt" rows={10} value={settings.system_prompt}
             onChange={e => setSettings({ ...settings, system_prompt: e.target.value })}
             className="font-mono text-sm" />
         </div>
-        <Button onClick={save} disabled={saving}>{saving ? "Saving…" : "Save settings"}</Button>
+        <Button onClick={save} disabled={saving}>{saving ? "جارٍ الحفظ…" : "حفظ الإعدادات"}</Button>
       </Card>
 
       <Card className="p-6 space-y-4 h-fit">
