@@ -47,6 +47,45 @@ async function getMistralKey(): Promise<string | null> {
   return value;
 }
 
+// Ask Mistral to judge whether the message contains insults / profanity /
+// hate speech / harassment / sexual harassment aimed at the bot or others.
+// Returns `null` for safe content, `{ reason }` when the message should trigger a block.
+async function moderateMessage(text: string): Promise<{ reason: string } | null> {
+  const key = await getMistralKey();
+  if (!key) return null; // fail-open if key missing, to avoid false blocks
+  try {
+    const res = await fetch(MISTRAL_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: "mistral-small-latest",
+        temperature: 0,
+        max_tokens: 60,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              'أنت مصنّف محتوى صارم. اقرأ رسالة المستخدم واحكم فقط: هل تحوي شتائم أو سبّاً أو إهانة أو تحرشاً أو خطاباً عدائياً/عنصرياً/طائفياً/جنسياً فاحشاً موجّهاً للبوت أو لأي شخص؟ الشكاوى العادية والغضب المهذّب والانتقاد ليست إهانة. أعد JSON فقط بالشكل: {"unsafe": true|false, "reason": "insult|profanity|harassment|hate|sexual|other"}. لا شيء آخر.',
+          },
+          { role: "user", content: text.slice(0, 1000) },
+        ],
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const raw = data?.choices?.[0]?.message?.content;
+    if (!raw) return null;
+    let parsed: any = null;
+    try { parsed = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return null; }
+    if (parsed?.unsafe === true) return { reason: String(parsed.reason || "inappropriate_language") };
+    return null;
+  } catch (e) {
+    console.error("[messenger] moderation error", e);
+    return null;
+  }
+}
+
 // Fetch Messenger user profile from Graph API and upsert into facebook_profiles.
 // Skips when a fresh (<7 days) profile is already cached.
 async function ensureFbProfile(admin: any, senderId: string, pageId: string | null) {
@@ -1085,11 +1124,40 @@ async function handleEvent(ev: any, pageId: string | null) {
     page_id: pageId,
   });
 
+  // Auto-moderation: silently ignore already-blocked users.
+  const { data: blockRow } = await admin
+    .from("blocked_users")
+    .select("facebook_user_id, is_active")
+    .eq("facebook_user_id", senderId)
+    .eq("is_active", true)
+    .maybeSingle();
+  if (blockRow) { console.log("[messenger] blocked user, ignoring"); return; }
+
   // Enroll new users into active drip campaigns (fires only on first user msg).
   enrollInActiveDrips(admin, senderId).catch((e) => console.error("[messenger] drip enroll", e));
 
   const { data: settings } = await admin.from("bot_settings").select("*").limit(1).maybeSingle();
   if (!settings || !settings.is_active) { console.log("[messenger] inactive"); return; }
+
+  // Auto-moderation: ask Mistral to classify the message. If it's abusive/insulting,
+  // send a single Arabic warning, add the user to blocked_users, and stop.
+  if (text && text.trim()) {
+    const unsafe = await moderateMessage(text);
+    if (unsafe) {
+      const warning = "⚠️ رصدت لغة غير لائقة في رسالتك. تم حظرك ولن يرد عليك البوت بعد الآن. إذا كنت تعتقد أن هذا خطأ، يمكن للمشرف إعادة تفعيل حسابك من لوحة الإدارة.";
+      await sendAndLog(admin, senderId, warning, pageId, userMsgStart);
+      await admin.from("blocked_users").upsert({
+        facebook_user_id: senderId,
+        reason: unsafe.reason || "inappropriate_language",
+        offending_message: text.slice(0, 500),
+        is_active: true,
+        blocked_at: new Date().toISOString(),
+        unblocked_at: null,
+      }, { onConflict: "facebook_user_id" });
+      return;
+    }
+  }
+
 
   if (imageUrls.length > 0 && !text) {
     await sendAndLog(admin, senderId, ASK_PROMPT_AR, pageId, userMsgStart);

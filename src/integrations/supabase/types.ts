@@ -35,6 +35,36 @@ export type Database = {
         }
         Relationships: []
       }
+      blocked_users: {
+        Row: {
+          blocked_at: string
+          facebook_user_id: string
+          id: string
+          is_active: boolean
+          offending_message: string | null
+          reason: string | null
+          unblocked_at: string | null
+        }
+        Insert: {
+          blocked_at?: string
+          facebook_user_id: string
+          id?: string
+          is_active?: boolean
+          offending_message?: string | null
+          reason?: string | null
+          unblocked_at?: string | null
+        }
+        Update: {
+          blocked_at?: string
+          facebook_user_id?: string
+          id?: string
+          is_active?: boolean
+          offending_message?: string | null
+          reason?: string | null
+          unblocked_at?: string | null
+        }
+        Relationships: []
+      }
       bot_settings: {
         Row: {
           allow_customer_length_config: boolean
