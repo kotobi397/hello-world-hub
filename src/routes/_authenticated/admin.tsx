@@ -96,12 +96,14 @@ function AdminPage() {
             <TabsTrigger value="analytics">التحليلات</TabsTrigger>
             <TabsTrigger value="chat">المحادثات</TabsTrigger>
             <TabsTrigger value="search">بحث وتصدير</TabsTrigger>
+            <TabsTrigger value="blocked">المحظورون</TabsTrigger>
             <TabsTrigger value="config">إعدادات البوت</TabsTrigger>
           </TabsList>
 
           <TabsContent value="analytics" className="mt-6"><Analytics /></TabsContent>
           <TabsContent value="chat" className="mt-6"><ChatLog /></TabsContent>
           <TabsContent value="search" className="mt-6"><SearchExport /></TabsContent>
+          <TabsContent value="blocked" className="mt-6"><BlockedUsers /></TabsContent>
           <TabsContent value="config" className="mt-6"><BotConfig /></TabsContent>
         </Tabs>
       </main>
