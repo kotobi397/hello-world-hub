@@ -719,6 +719,133 @@ function SearchExport() {
   );
 }
 
+type BlockedUser = {
+  id: string;
+  facebook_user_id: string;
+  reason: string | null;
+  offending_message: string | null;
+  blocked_at: string;
+  unblocked_at: string | null;
+  is_active: boolean;
+};
+
+function BlockedUsers() {
+  const [rows, setRows] = useState<BlockedUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [profiles, setProfiles] = useState<Record<string, FbProfile>>({});
+
+  async function load() {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("blocked_users")
+      .select("*")
+      .eq("is_active", true)
+      .order("blocked_at", { ascending: false });
+    setLoading(false);
+    if (error) return toast.error(error.message);
+    const list = (data ?? []) as BlockedUser[];
+    setRows(list);
+    if (list.length) {
+      const ids = list.map(r => r.facebook_user_id);
+      const { data: profs } = await supabase
+        .from("facebook_profiles").select("*").in("facebook_user_id", ids);
+      const map: Record<string, FbProfile> = {};
+      for (const p of (profs ?? []) as any[]) map[p.facebook_user_id] = p;
+      setProfiles(map);
+    }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function unblock(row: BlockedUser) {
+    if (!confirm(`رفع الحظر عن هذا المستخدم؟ سيعود البوت للرد عليه.`)) return;
+    setBusy(row.id);
+    const { error } = await supabase
+      .from("blocked_users")
+      .update({ is_active: false, unblocked_at: new Date().toISOString() })
+      .eq("id", row.id);
+    setBusy(null);
+    if (error) return toast.error(error.message);
+    toast.success("تم رفع الحظر — البوت سيرد عليه من جديد");
+    setRows(prev => prev.filter(r => r.id !== row.id));
+  }
+
+  const REASON_AR: Record<string, string> = {
+    insult: "إهانة",
+    profanity: "شتائم",
+    harassment: "تحرش",
+    hate: "خطاب كراهية",
+    sexual: "محتوى جنسي",
+    inappropriate_language: "لغة غير لائقة",
+    other: "أخرى",
+  };
+
+  return (
+    <Card className="p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-lg font-semibold">المستخدمون المحظورون</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            يُحظر المستخدم تلقائياً عند رصد Mistral AI للغة غير لائقة. البوت لا يرد على المحظورين. ارفع الحظر لإعادة تفعيل الردود.
+          </p>
+        </div>
+        <Button size="sm" variant="outline" onClick={load} disabled={loading}>
+          {loading ? "..." : "تحديث"}
+        </Button>
+      </div>
+
+      {loading ? (
+        <div className="text-sm text-muted-foreground py-8 text-center">جارٍ التحميل…</div>
+      ) : rows.length === 0 ? (
+        <div className="text-sm text-muted-foreground py-12 text-center">
+          لا يوجد مستخدمون محظورون حالياً 🎉
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {rows.map((r) => {
+            const p = profiles[r.facebook_user_id];
+            const displayName = p?.name || fakeNameFromUid(r.facebook_user_id);
+            return (
+              <div key={r.id} className="flex items-start gap-3 p-4 rounded-xl border border-border/60 bg-muted/20 hover:bg-muted/30 transition-colors">
+                <Avatar profile={p} uid={r.facebook_user_id} size={44} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold truncate">{displayName}</span>
+                    <Badge variant="destructive" className="text-[10px]">
+                      {REASON_AR[r.reason || "other"] || r.reason || "محظور"}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
+                      {formatRelativeAr(r.blocked_at)}
+                    </span>
+                  </div>
+                  {r.offending_message && (
+                    <div className="mt-2 text-xs text-muted-foreground bg-background/60 rounded-md p-2 border border-border/40 line-clamp-2 break-words">
+                      "{r.offending_message}"
+                    </div>
+                  )}
+                  <div className="text-[11px] text-muted-foreground mt-1 font-mono">
+                    {r.facebook_user_id}
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => unblock(r)}
+                  disabled={busy === r.id}
+                  className="shrink-0"
+                >
+                  {busy === r.id ? "..." : "رفع الحظر"}
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 type BotSettings = {
   id: string;
   system_prompt: string;
