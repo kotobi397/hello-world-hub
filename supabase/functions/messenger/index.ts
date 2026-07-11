@@ -1,6 +1,8 @@
 // Facebook Messenger webhook — Mistral + tools + long memory + reminders.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { initWasm as initResvg, Resvg } from "https://esm.sh/@resvg/resvg-wasm@2.6.2";
+import { Image } from "https://deno.land/x/imagescript@1.2.17/mod.ts";
 
 const MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions";
 const FB_API = "https://graph.facebook.com/v19.0/me/messages";
@@ -203,13 +205,17 @@ const tools = [
     function: {
       name: "generate_image",
       description:
-        "أنشئ/تخيّل صورة من وصف نصي وأرسلها للمستخدم على ماسنجر. استخدمها كلما طلب المستخدم صورة أو رسمة أو تصميماً أو تخيّل مشهد. مرّر وصفاً واضحاً باللغة الإنجليزية أفضل (إن أمكن) للحصول على أفضل جودة.",
+        "أنشئ/تخيّل صورة من وصف نصي وأرسلها للمستخدم على ماسنجر. استخدمها كلما طلب المستخدم صورة أو رسمة أو تصميماً أو تخيّل مشهد. مهم جداً: إذا طلب المستخدم كتابة نص عربي داخل الصورة، لا تضع النص العربي في حقل prompt أبداً (النموذج يشوّهه)، بل مرّر الوصف البصري بالإنجليزية في prompt واذكر فيه 'leave a clean empty banner area at the bottom for text', ثم ضع النص العربي المطلوب حرفياً في حقل arabic_text وسيُرسم فوق الصورة بخط عربي حقيقي.",
       parameters: {
         type: "object",
         properties: {
           prompt: {
             type: "string",
-            description: "وصف تفصيلي للصورة المطلوبة (يفضل الإنجليزية لجودة أعلى، لكن العربية تعمل أيضاً).",
+            description: "وصف بصري للصورة (يفضّل الإنجليزية للجودة). لا تضع نصاً عربياً هنا.",
+          },
+          arabic_text: {
+            type: "string",
+            description: "اختياري: النص العربي الذي يجب أن يظهر داخل الصورة حرفياً. يُرسم بخط عربي حقيقي فوق الصورة بعد توليدها.",
           },
         },
         required: ["prompt"],
@@ -370,7 +376,7 @@ async function executeTool(name: string, args: any, senderId: string, admin: any
       return await sendVoiceNote(senderId, String(args.text), String(args.voice ?? "alloy"), admin);
     }
     if (name === "generate_image") {
-      return await generateImage(senderId, String(args.prompt ?? ""), admin);
+      return await generateImage(senderId, String(args.prompt ?? ""), admin, args.arabic_text ? String(args.arabic_text) : "");
     }
     if (name === "web_search") {
       return await webSearch(String(args.query ?? ""));
@@ -641,6 +647,107 @@ async function sendVoiceNote(senderId: string, text: string, voice: string, admi
 // ============ IMAGE GENERATION (Mistral Agents API) ============
 
 let cachedImageAgentId: string | null = null;
+let resvgReady: Promise<void> | null = null;
+let arabicFontBytes: Uint8Array | null = null;
+
+async function ensureResvg() {
+  if (!resvgReady) {
+    resvgReady = (async () => {
+      const wasmRes = await fetch("https://esm.sh/@resvg/resvg-wasm@2.6.2/index_bg.wasm");
+      const buf = await wasmRes.arrayBuffer();
+      await initResvg(buf);
+    })();
+  }
+  await resvgReady;
+}
+
+async function ensureArabicFont(): Promise<Uint8Array> {
+  if (arabicFontBytes) return arabicFontBytes;
+  // Noto Naskh Arabic — supports full Arabic shaping/joining.
+  const urls = [
+    "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted/ttf/NotoNaskhArabic/NotoNaskhArabic-Bold.ttf",
+    "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted/ttf/NotoNaskhArabic/NotoNaskhArabic-Regular.ttf",
+  ];
+  for (const u of urls) {
+    try {
+      const r = await fetch(u);
+      if (r.ok) {
+        arabicFontBytes = new Uint8Array(await r.arrayBuffer());
+        return arabicFontBytes;
+      }
+    } catch (_) { /* try next */ }
+  }
+  throw new Error("arabic_font_fetch_failed");
+}
+
+function escapeXml(s: string) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+
+async function overlayArabicText(pngBytes: Uint8Array, text: string): Promise<Uint8Array> {
+  try {
+    await ensureResvg();
+    const font = await ensureArabicFont();
+    const bg = await Image.decode(pngBytes);
+    const W = bg.width;
+    const H = bg.height;
+
+    // Wrap long text into up to 3 lines by character count.
+    const clean = text.trim().replace(/\s+/g, " ");
+    const maxCharsPerLine = Math.max(18, Math.floor(W / 26));
+    const words = clean.split(" ");
+    const lines: string[] = [];
+    let cur = "";
+    for (const w of words) {
+      if ((cur + " " + w).trim().length > maxCharsPerLine && cur) {
+        lines.push(cur);
+        cur = w;
+      } else {
+        cur = (cur ? cur + " " : "") + w;
+      }
+      if (lines.length >= 2) break;
+    }
+    if (cur) lines.push(cur);
+    if (words.join(" ").length > lines.join(" ").length) {
+      // Truncate remainder with ellipsis on last line.
+      const used = lines.join(" ").length;
+      const rest = clean.slice(used).trim();
+      if (rest) lines[lines.length - 1] = (lines[lines.length - 1] + " " + rest).slice(0, maxCharsPerLine - 1) + "…";
+    }
+
+    const lineCount = lines.length;
+    const bandH = Math.round(H * (0.14 + 0.07 * (lineCount - 1)));
+    const fontSize = Math.round(bandH / (lineCount + 0.6));
+    const lineHeight = Math.round(fontSize * 1.25);
+    const startY = Math.round((bandH - lineHeight * lineCount) / 2 + fontSize);
+
+    const tspans = lines.map((ln, i) =>
+      `<tspan x="50%" y="${startY + i * lineHeight}">${escapeXml(ln)}</tspan>`
+    ).join("");
+
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${bandH}">
+      <rect width="100%" height="100%" fill="rgb(255,255,255)" fill-opacity="0.9"/>
+      <text text-anchor="middle" direction="rtl"
+        font-family="Noto Naskh Arabic" font-weight="bold"
+        font-size="${fontSize}" fill="rgb(15,15,15)">${tspans}</text>
+    </svg>`;
+
+    const resvg = new Resvg(svg, {
+      font: { fontBuffers: [font], defaultFontFamily: "Noto Naskh Arabic", loadSystemFonts: false },
+      textRendering: 2,
+    });
+    const pngData = resvg.render().asPng();
+
+    const overlay = await Image.decode(pngData);
+    bg.composite(overlay, 0, H - bandH);
+    return await bg.encode();
+  } catch (err) {
+    console.error("[messenger] overlayArabicText failed", err);
+    return pngBytes; // fall back to original
+  }
+}
+
 
 async function ensureImageAgent(key: string): Promise<string | null> {
   if (cachedImageAgentId) return cachedImageAgentId;
@@ -670,12 +777,24 @@ async function ensureImageAgent(key: string): Promise<string | null> {
   }
 }
 
-async function generateImage(senderId: string, prompt: string, admin: any): Promise<string> {
+async function generateImage(senderId: string, prompt: string, admin: any, arabicText: string = ""): Promise<string> {
   const key = Deno.env.get("MISTRAL_API_KEY");
   const pageToken = Deno.env.get("FB_PAGE_ACCESS_TOKEN");
   if (!key) return JSON.stringify({ ok: false, error: "no_image_provider" });
   if (!pageToken) return JSON.stringify({ ok: false, error: "fb_token_missing" });
   if (!prompt.trim()) return JSON.stringify({ ok: false, error: "empty_prompt" });
+
+  // Strip any Arabic characters from prompt (Mistral image model mangles them);
+  // real Arabic is drawn as an overlay via arabicText.
+  const hasArabic = /[\u0600-\u06FF]/.test(prompt);
+  let cleanPrompt = prompt;
+  if (hasArabic) {
+    cleanPrompt = prompt.replace(/[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]+/g, "").replace(/\s+/g, " ").trim();
+    if (!cleanPrompt) cleanPrompt = "a clean visual scene";
+  }
+  if (arabicText.trim()) {
+    cleanPrompt += ". Leave a clean empty horizontal banner area at the bottom of the image (about 20% of height) with a plain background — no text, no letters, no writing anywhere.";
+  }
 
   const agentId = await ensureImageAgent(key);
   if (!agentId) return JSON.stringify({ ok: false, error: "agent_unavailable" });
@@ -690,7 +809,7 @@ async function generateImage(senderId: string, prompt: string, admin: any): Prom
     const convRes = await fetch("https://api.mistral.ai/v1/conversations", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ agent_id: agentId, inputs: prompt }),
+      body: JSON.stringify({ agent_id: agentId, inputs: cleanPrompt }),
     });
     if (!convRes.ok) {
       const t = await convRes.text();
@@ -728,7 +847,13 @@ async function generateImage(senderId: string, prompt: string, admin: any): Prom
       console.error("[messenger] file download failed", fileRes.status);
       return JSON.stringify({ ok: false, error: "download_failed" });
     }
-    const imgBuf = new Uint8Array(await fileRes.arrayBuffer());
+    let imgBuf = new Uint8Array(await fileRes.arrayBuffer());
+
+    // If the user requested Arabic text in the image, draw it as an overlay
+    // using a real Arabic font (Mistral's image model can't render Arabic correctly).
+    if (arabicText.trim()) {
+      imgBuf = await overlayArabicText(imgBuf, arabicText.trim());
+    }
 
     // Upload to bot-media
     const path = `images/${senderId}/${Date.now()}.png`;
