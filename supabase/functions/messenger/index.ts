@@ -847,7 +847,13 @@ async function generateImage(senderId: string, prompt: string, admin: any, arabi
       console.error("[messenger] file download failed", fileRes.status);
       return JSON.stringify({ ok: false, error: "download_failed" });
     }
-    const imgBuf = new Uint8Array(await fileRes.arrayBuffer());
+    let imgBuf = new Uint8Array(await fileRes.arrayBuffer());
+
+    // If the user requested Arabic text in the image, draw it as an overlay
+    // using a real Arabic font (Mistral's image model can't render Arabic correctly).
+    if (arabicText.trim()) {
+      imgBuf = await overlayArabicText(imgBuf, arabicText.trim());
+    }
 
     // Upload to bot-media
     const path = `images/${senderId}/${Date.now()}.png`;
