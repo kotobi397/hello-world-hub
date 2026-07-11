@@ -647,6 +647,107 @@ async function sendVoiceNote(senderId: string, text: string, voice: string, admi
 // ============ IMAGE GENERATION (Mistral Agents API) ============
 
 let cachedImageAgentId: string | null = null;
+let resvgReady: Promise<void> | null = null;
+let arabicFontBytes: Uint8Array | null = null;
+
+async function ensureResvg() {
+  if (!resvgReady) {
+    resvgReady = (async () => {
+      const wasmRes = await fetch("https://esm.sh/@resvg/resvg-wasm@2.6.2/index_bg.wasm");
+      const buf = await wasmRes.arrayBuffer();
+      await initResvg(buf);
+    })();
+  }
+  await resvgReady;
+}
+
+async function ensureArabicFont(): Promise<Uint8Array> {
+  if (arabicFontBytes) return arabicFontBytes;
+  // Noto Naskh Arabic — supports full Arabic shaping/joining.
+  const urls = [
+    "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted/ttf/NotoNaskhArabic/NotoNaskhArabic-Bold.ttf",
+    "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted/ttf/NotoNaskhArabic/NotoNaskhArabic-Regular.ttf",
+  ];
+  for (const u of urls) {
+    try {
+      const r = await fetch(u);
+      if (r.ok) {
+        arabicFontBytes = new Uint8Array(await r.arrayBuffer());
+        return arabicFontBytes;
+      }
+    } catch (_) { /* try next */ }
+  }
+  throw new Error("arabic_font_fetch_failed");
+}
+
+function escapeXml(s: string) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+
+async function overlayArabicText(pngBytes: Uint8Array, text: string): Promise<Uint8Array> {
+  try {
+    await ensureResvg();
+    const font = await ensureArabicFont();
+    const bg = await Image.decode(pngBytes);
+    const W = bg.width;
+    const H = bg.height;
+
+    // Wrap long text into up to 3 lines by character count.
+    const clean = text.trim().replace(/\s+/g, " ");
+    const maxCharsPerLine = Math.max(18, Math.floor(W / 26));
+    const words = clean.split(" ");
+    const lines: string[] = [];
+    let cur = "";
+    for (const w of words) {
+      if ((cur + " " + w).trim().length > maxCharsPerLine && cur) {
+        lines.push(cur);
+        cur = w;
+      } else {
+        cur = (cur ? cur + " " : "") + w;
+      }
+      if (lines.length >= 2) break;
+    }
+    if (cur) lines.push(cur);
+    if (words.join(" ").length > lines.join(" ").length) {
+      // Truncate remainder with ellipsis on last line.
+      const used = lines.join(" ").length;
+      const rest = clean.slice(used).trim();
+      if (rest) lines[lines.length - 1] = (lines[lines.length - 1] + " " + rest).slice(0, maxCharsPerLine - 1) + "…";
+    }
+
+    const lineCount = lines.length;
+    const bandH = Math.round(H * (0.14 + 0.07 * (lineCount - 1)));
+    const fontSize = Math.round(bandH / (lineCount + 0.6));
+    const lineHeight = Math.round(fontSize * 1.25);
+    const startY = Math.round((bandH - lineHeight * lineCount) / 2 + fontSize);
+
+    const tspans = lines.map((ln, i) =>
+      `<tspan x="50%" y="${startY + i * lineHeight}">${escapeXml(ln)}</tspan>`
+    ).join("");
+
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${bandH}">
+      <rect width="100%" height="100%" fill="rgb(255,255,255)" fill-opacity="0.9"/>
+      <text text-anchor="middle" direction="rtl"
+        font-family="Noto Naskh Arabic" font-weight="bold"
+        font-size="${fontSize}" fill="rgb(15,15,15)">${tspans}</text>
+    </svg>`;
+
+    const resvg = new Resvg(svg, {
+      font: { fontBuffers: [font], defaultFontFamily: "Noto Naskh Arabic", loadSystemFonts: false },
+      textRendering: 2,
+    });
+    const pngData = resvg.render().asPng();
+
+    const overlay = await Image.decode(pngData);
+    bg.composite(overlay, 0, H - bandH);
+    return await bg.encode();
+  } catch (err) {
+    console.error("[messenger] overlayArabicText failed", err);
+    return pngBytes; // fall back to original
+  }
+}
+
 
 async function ensureImageAgent(key: string): Promise<string | null> {
   if (cachedImageAgentId) return cachedImageAgentId;
