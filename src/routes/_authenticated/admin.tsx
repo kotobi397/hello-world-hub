@@ -961,6 +961,7 @@ function BotConfig() {
           <div>✓ <Badge variant="secondary">FB_VERIFY_TOKEN</Badge></div>
         </div>
       </Card>
+      </div>
     </div>
   );
 }
