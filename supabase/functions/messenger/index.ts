@@ -809,7 +809,7 @@ async function generateImage(senderId: string, prompt: string, admin: any, arabi
     const convRes = await fetch("https://api.mistral.ai/v1/conversations", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ agent_id: agentId, inputs: prompt }),
+      body: JSON.stringify({ agent_id: agentId, inputs: cleanPrompt }),
     });
     if (!convRes.ok) {
       const t = await convRes.text();
