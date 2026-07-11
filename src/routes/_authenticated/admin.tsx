@@ -743,11 +743,23 @@ const TONE_OPTIONS: { value: BotSettings["tone"]; label: string; desc: string }[
 function BotConfig() {
   const [settings, setSettings] = useState<BotSettings | null>(null);
   const [saving, setSaving] = useState(false);
+  const [mistralKey, setMistralKey] = useState("");
+  const [mistralKeyMasked, setMistralKeyMasked] = useState<string | null>(null);
+  const [mistralConfigId, setMistralConfigId] = useState<string | null>(null);
+  const [savingKey, setSavingKey] = useState(false);
+  const [showKey, setShowKey] = useState(false);
   const webhookUrl = getWebhookUrl();
 
   useEffect(() => {
     supabase.from("bot_settings").select("*").limit(1).maybeSingle()
       .then(({ data }) => { if (data) setSettings(data as BotSettings); });
+    (supabase.from("app_config" as any) as any).select("id, mistral_api_key").limit(1).maybeSingle()
+      .then(({ data }: any) => {
+        if (!data) return;
+        setMistralConfigId(data.id);
+        const k = data.mistral_api_key as string | null;
+        if (k) setMistralKeyMasked(`${k.slice(0, 4)}••••••••${k.slice(-4)}`);
+      });
   }, []);
 
   async function save() {
@@ -767,7 +779,30 @@ function BotConfig() {
     toast.success("تم حفظ الإعدادات — البوت يعمل بها فوراً");
   }
 
-  if (!settings) return <div className="text-muted-foreground text-sm">Loading…</div>;
+  async function saveMistralKey() {
+    const value = mistralKey.trim();
+    if (!value) return toast.error("أدخل مفتاح Mistral API");
+    setSavingKey(true);
+    let error: any = null;
+    if (mistralConfigId) {
+      const res = await (supabase.from("app_config" as any) as any)
+        .update({ mistral_api_key: value, updated_at: new Date().toISOString() })
+        .eq("id", mistralConfigId);
+      error = res.error;
+    } else {
+      const res = await (supabase.from("app_config" as any) as any)
+        .insert({ mistral_api_key: value }).select("id").maybeSingle();
+      error = res.error;
+      if (res.data?.id) setMistralConfigId(res.data.id);
+    }
+    setSavingKey(false);
+    if (error) return toast.error(error.message);
+    setMistralKeyMasked(`${value.slice(0, 4)}••••••••${value.slice(-4)}`);
+    setMistralKey("");
+    setShowKey(false);
+    toast.success("تم تحديث مفتاح Mistral — يعمل البوت به فوراً");
+  }
+
 
   return (
     <div className="grid md:grid-cols-3 gap-6">
