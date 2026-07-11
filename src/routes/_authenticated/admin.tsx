@@ -268,27 +268,52 @@ function Analytics() {
       </Card>
 
       {/* Secondary stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard icon={MessageSquare} label={`الإجمالي · ${periodLabel}`} value={(bot + usr).toLocaleString()} />
-        <StatCard icon={Users} label={`الجلسات · ${periodLabel}`} value={sessions.toLocaleString()} />
-        <StatCard icon={Clock} label="متوسط الاستجابة" value={derived.avgRt ? `${(derived.avgRt / 1000).toFixed(1)}s` : "—"} />
-        <StatCard icon={ThumbsUp} label="الرضا" value={derived.satisfaction !== null ? `${derived.satisfaction}%` : "—"} />
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+        <StatCard icon={MessageSquare} label={`الإجمالي · ${periodLabel}`} value={(bot + usr).toLocaleString()} tint="sky" />
+        <StatCard icon={Users} label={`الجلسات · ${periodLabel}`} value={sessions.toLocaleString()} tint="violet" />
+        <StatCard icon={Clock} label="متوسط الاستجابة" value={derived.avgRt ? `${(derived.avgRt / 1000).toFixed(1)}s` : "—"} tint="amber" />
+        <StatCard icon={ThumbsUp} label="الرضا" value={derived.satisfaction !== null ? `${derived.satisfaction}%` : "—"} tint="emerald" />
       </div>
 
-      <Card className="p-6 border-border/60 bg-gradient-to-br from-card to-card/60">
-        <h3 className="font-semibold mb-4 flex items-center gap-2"><Activity className="w-4 h-4 text-primary" />أكثر الأسئلة تكراراً</h3>
-        {derived.topQuestions.length === 0 ? (
-          <div className="text-sm text-muted-foreground">لا توجد بيانات كافية بعد.</div>
-        ) : (
-          <div className="grid md:grid-cols-2 gap-2">
-            {derived.topQuestions.map(([q, c]) => (
-              <div key={q} className="flex items-center justify-between gap-2 text-sm p-3 rounded-lg bg-muted/40 hover:bg-muted/70 transition">
-                <span className="truncate">{q}…</span>
-                <Badge variant="secondary" className="shrink-0">{c}</Badge>
-              </div>
-            ))}
+      <Card className="relative overflow-hidden p-6 md:p-7 border-border/60 bg-gradient-to-br from-card via-card to-muted/30 shadow-sm">
+        <div className="absolute -top-24 -left-24 w-64 h-64 rounded-full bg-gradient-to-br from-indigo-500/10 to-sky-400/5 blur-3xl pointer-events-none" />
+        <div className="relative">
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="font-semibold flex items-center gap-2 text-base">
+              <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-sky-500 grid place-items-center shadow-sm shadow-indigo-500/30">
+                <Activity className="w-4 h-4 text-white" />
+              </span>
+              أكثر الأسئلة تكراراً
+            </h3>
+            {derived.topQuestions.length > 0 && (
+              <Badge variant="secondary" className="rounded-full">{derived.topQuestions.length}</Badge>
+            )}
           </div>
-        )}
+          {derived.topQuestions.length === 0 ? (
+            <div className="text-sm text-muted-foreground py-6 text-center">لا توجد بيانات كافية بعد.</div>
+          ) : (
+            <div className="space-y-2">
+              {derived.topQuestions.map(([q, c], i) => {
+                const max = derived.topQuestions[0][1];
+                const pct = Math.max(8, Math.round((c / max) * 100));
+                return (
+                  <div key={q} className="group relative flex items-center gap-3 p-3 rounded-xl border border-border/40 bg-background/60 hover:bg-background hover:border-border transition-all overflow-hidden">
+                    <div className="absolute inset-y-0 right-0 bg-gradient-to-l from-indigo-500/8 via-indigo-500/4 to-transparent transition-all group-hover:from-indigo-500/12"
+                         style={{ width: `${pct}%` }} />
+                    <div className="relative w-7 h-7 rounded-full bg-muted grid place-items-center text-[11px] font-bold text-muted-foreground shrink-0 tabular-nums">
+                      {i + 1}
+                    </div>
+                    <span className="relative flex-1 truncate text-sm">{q}…</span>
+                    <div className="relative flex items-center gap-1.5 shrink-0">
+                      <span className="text-xs text-muted-foreground">تكرار</span>
+                      <Badge className="rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/15 border-0 tabular-nums">{c}</Badge>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </Card>
     </div>
   );
@@ -308,14 +333,24 @@ function ShowcaseStat({ label, value, dotColor }: { dotColor: string; label: str
   );
 }
 
-function StatCard({ icon: Icon, label, value }: { icon: any; label: string; value: any }) {
+const TINTS: Record<string, { bg: string; icon: string; ring: string }> = {
+  sky:     { bg: "from-sky-500/10 to-sky-500/0",         icon: "text-sky-600 dark:text-sky-400 bg-sky-500/10",         ring: "hover:border-sky-500/40" },
+  violet:  { bg: "from-violet-500/10 to-violet-500/0",   icon: "text-violet-600 dark:text-violet-400 bg-violet-500/10", ring: "hover:border-violet-500/40" },
+  amber:   { bg: "from-amber-500/10 to-amber-500/0",     icon: "text-amber-600 dark:text-amber-400 bg-amber-500/10",   ring: "hover:border-amber-500/40" },
+  emerald: { bg: "from-emerald-500/10 to-emerald-500/0", icon: "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10", ring: "hover:border-emerald-500/40" },
+};
+
+function StatCard({ icon: Icon, label, value, tint = "sky" }: { icon: any; label: string; value: any; tint?: keyof typeof TINTS }) {
+  const t = TINTS[tint];
   return (
-    <Card className="p-6">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-sm text-muted-foreground">{label}</span>
-        <Icon className="w-4 h-4 text-muted-foreground" />
+    <Card className={`relative overflow-hidden p-5 border-border/60 bg-gradient-to-br ${t.bg} transition-all ${t.ring} hover:shadow-md hover:-translate-y-0.5`}>
+      <div className="flex items-start justify-between mb-3 gap-2">
+        <span className="text-xs md:text-sm text-muted-foreground leading-tight line-clamp-2">{label}</span>
+        <span className={`w-9 h-9 rounded-xl grid place-items-center shrink-0 ${t.icon}`}>
+          <Icon className="w-4 h-4" />
+        </span>
       </div>
-      <div className="text-3xl font-semibold">{value}</div>
+      <div className="text-2xl md:text-3xl font-bold tracking-tight tabular-nums">{value}</div>
     </Card>
   );
 }
