@@ -376,7 +376,7 @@ async function executeTool(name: string, args: any, senderId: string, admin: any
       return await sendVoiceNote(senderId, String(args.text), String(args.voice ?? "alloy"), admin);
     }
     if (name === "generate_image") {
-      return await generateImage(senderId, String(args.prompt ?? ""), admin);
+      return await generateImage(senderId, String(args.prompt ?? ""), admin, args.arabic_text ? String(args.arabic_text) : "");
     }
     if (name === "web_search") {
       return await webSearch(String(args.query ?? ""));
