@@ -1199,6 +1199,40 @@ async function handleEvent(ev: any, pageId: string | null) {
     return;
   }
 
+  // === Text-command fallback for Facebook Lite / old clients that don't render quick replies ===
+  if (text) {
+    const normalized = text.replace(/[.،,!؟?]+$/g, "").trim();
+    // active reading session → next / stop by typing
+    const { data: activeSession } = await admin
+      .from("book_sessions").select("identifier").eq("facebook_user_id", senderId).maybeSingle();
+    if (activeSession) {
+      if (/^(?:التالي|التالى|تالي|التالية|التاليه|next|المزيد|كمل|كمّل|واصل|استمر)$/i.test(normalized)) {
+        await handleBookNext(admin, senderId, pageId);
+        return;
+      }
+      if (/^(?:توقف|ايقاف|إيقاف|قف|stop|انهاء|إنهاء|كفى)$/i.test(normalized)) {
+        await admin.from("book_sessions").delete().eq("facebook_user_id", senderId);
+        await sendAndLog(admin, senderId, "تم إيقاف القراءة ✅", pageId);
+        return;
+      }
+    }
+    // just a number → pick from last search cache
+    const numMatch = normalized.match(/^([0-9\u0660-\u0669\u06F0-\u06F9]{1,2})$/);
+    if (numMatch) {
+      const arabicDigits = numMatch[1]
+        .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+        .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0));
+      const idx = parseInt(arabicDigits, 10) - 1;
+      const { data: cache } = await admin.from("book_search_cache")
+        .select("results,created_at").eq("facebook_user_id", senderId).maybeSingle();
+      const results = (cache?.results ?? []) as BookResult[];
+      if (results.length && idx >= 0 && idx < results.length) {
+        await handleBookRead(admin, senderId, results[idx].identifier, pageId);
+        return;
+      }
+    }
+  }
+
   // === Detect book / author intent → search archive.org ===
   if (text) {
     // author intent: "كاتب فلان" / "مؤلف فلان" / "كتب فلان" / "روايات فلان" / "أعمال فلان"
@@ -1792,14 +1826,17 @@ async function sendBookImage(senderId: string, url: string): Promise<boolean> {
 }
 
 async function sendContinueButton(senderId: string, text: string, hasNext: boolean) {
-  // Use Quick Replies instead of button/generic templates — they render reliably
-  // on Messenger Lite and older Messenger versions where templates often don't.
+  // Quick Replies for Messenger; plain-text hint for Facebook Lite / clients
+  // that don't render quick replies at all.
+  const hint = hasNext
+    ? "\n\n➡️ اكتب «التالي» للصفحات التالية، أو «توقف» للإنهاء."
+    : "\n\n✖️ اكتب «توقف» للإنهاء.";
   const quick_replies: any[] = [];
   if (hasNext) {
     quick_replies.push({ content_type: "text", title: "الصفحات التالية ⬅️", payload: "BOOK_NEXT" });
   }
   quick_replies.push({ content_type: "text", title: "إيقاف القراءة ✖️", payload: "BOOK_STOP" });
-  await fbSendRaw(senderId, { text, quick_replies });
+  await fbSendRaw(senderId, { text: (text + hint).slice(0, 2000), quick_replies });
 }
 
 async function handleBookSearch(admin: any, senderId: string, query: string, pageId: string | null, userMsgStart: number, mode: SearchMode = "any") {
@@ -1820,7 +1857,7 @@ async function handleBookSearch(admin: any, senderId: string, query: string, pag
     const meta = [r.creator, `${r.pages} صفحة`].filter(Boolean).join(" · ");
     return `${i + 1}. ${r.title}${meta ? `\n   ${meta}` : ""}`;
   });
-  const text = `📚 نتائج البحث عن «${query}»:\n\n${lines.join("\n\n")}\n\nاضغط رقم الكتاب للقراءة 👇`;
+  const text = `📚 نتائج البحث عن «${query}»:\n\n${lines.join("\n\n")}\n\n👇 اضغط رقم الكتاب من الأزرار بالأسفل، أو اكتب الرقم فقط (مثال: 1) إن لم تظهر لك الأزرار على Facebook Lite.`;
   const quick_replies = results.slice(0, 11).map((r, i) => ({
     content_type: "text",
     title: `${i + 1} 📖`,
