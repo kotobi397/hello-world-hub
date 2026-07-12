@@ -1715,50 +1715,107 @@ type BookResult = { identifier: string; title: string; creator: string | null; p
 
 type SearchMode = "title" | "author" | "any";
 
-function buildArchiveQuery(query: string, mode: SearchMode): string {
+function normalizeArchiveSearchText(query: string): string {
+  return query
+    .replace(/[?؟.!،,؛:]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function uniqueSearchQueries(queries: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const q of queries.map(normalizeArchiveSearchText).filter((q) => q.length >= 2)) {
+    const key = q.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(q);
+  }
+  return out.slice(0, 18);
+}
+
+function expandBookSearchQueries(query: string, mode: SearchMode): string[] {
+  const q = normalizeArchiveSearchText(query)
+    .replace(/^كتب\s+/iu, "")
+    .replace(/^روايات\s+/iu, "")
+    .replace(/^مؤلفات\s+/iu, "")
+    .trim();
+  const variants = [q];
+
+  // Archive.org Arabic metadata is inconsistent: Dostoevsky appears as
+  // فيودور / فيدور / دوستويفسكي / دستويفسكي, and sometimes only in the title.
+  if (/(?:فيودور|فيدور|دوستويفسكي|دستويفسكي|dostoevsky|dostoyevsky|fyodor)/iu.test(q)) {
+    variants.push(
+      "فيودور دوستويفسكي",
+      "فيدور دوستويفسكي",
+      "دوستويفسكي",
+      "دستويفسكي",
+      "Fyodor Dostoevsky",
+      "Fyodor Dostoyevsky",
+      "Dostoevsky",
+      "Dostoyevsky",
+      "الجريمة والعقاب دوستويفسكي",
+      "الإخوة كارامازوف دوستويفسكي",
+      "الاخوة كارامازوف دوستويفسكي",
+      "الأبله دوستويفسكي",
+      "المقامر دوستويفسكي",
+      "الشياطين دوستويفسكي",
+      "الليالي البيضاء دوستويفسكي",
+      "الفقراء دوستويفسكي",
+      "مذكرات من تحت الأرض دوستويفسكي",
+    );
+  }
+
+  if (mode === "author") {
+    variants.push(q.replace(/^الكاتب\s+/iu, ""), q.replace(/^المؤلف\s+/iu, ""));
+  }
+  return uniqueSearchQueries(variants);
+}
+
+function buildArchiveQuery(query: string, mode: SearchMode, withLanguageFilter = true): string {
   // Escape Lucene special characters that break archive.org's query parser.
   const esc = query.replace(/([+\-!(){}\[\]^"~*?:\\\/])/g, " ").replace(/\s+/g, " ").trim();
   const langFilter = "(language:Arabic OR language:ara OR language:ar)";
   const base = "mediatype:texts";
+  const suffix = withLanguageFilter ? ` AND ${langFilter}` : "";
   if (mode === "author") {
     // Search across creator + title (some uploads mistakenly put the author in the title).
-    return `(creator:(${esc}) OR title:(${esc})) AND ${base} AND ${langFilter}`;
+    return `(creator:(${esc}) OR title:(${esc}) OR subject:(${esc}) OR description:(${esc})) AND ${base}${suffix}`;
   }
   if (mode === "title") {
-    return `title:(${esc}) AND ${base} AND ${langFilter}`;
+    return `(title:(${esc}) OR description:(${esc})) AND ${base}${suffix}`;
   }
   // "any" — broad fielded search across title/creator/subject/description.
-  return `(title:(${esc}) OR creator:(${esc}) OR subject:(${esc}) OR description:(${esc})) AND ${base} AND ${langFilter}`;
+  return `(title:(${esc}) OR creator:(${esc}) OR subject:(${esc}) OR description:(${esc})) AND ${base}${suffix}`;
 }
 
 async function archiveSearch(query: string, mode: SearchMode = "any"): Promise<BookResult[]> {
-  const q = buildArchiveQuery(query, mode);
-  const url = new URL(ARCHIVE_SEARCH_URL);
-  url.searchParams.set("q", q);
-  url.searchParams.append("fl[]", "identifier");
-  url.searchParams.append("fl[]", "title");
-  url.searchParams.append("fl[]", "creator");
-  url.searchParams.append("fl[]", "imagecount");
-  url.searchParams.append("fl[]", "downloads");
-  url.searchParams.append("sort[]", "downloads desc");
-  url.searchParams.set("rows", "50");
-  url.searchParams.set("output", "json");
+  const candidateQueries = expandBookSearchQueries(query, mode);
+  const results: BookResult[] = [];
+  const seen = new Set<string>();
+  const appendResults = async (searchText: string, withLanguageFilter: boolean) => {
+    const url = new URL(ARCHIVE_SEARCH_URL);
+    url.searchParams.set("q", buildArchiveQuery(searchText, mode, withLanguageFilter));
+    url.searchParams.append("fl[]", "identifier");
+    url.searchParams.append("fl[]", "title");
+    url.searchParams.append("fl[]", "creator");
+    url.searchParams.append("fl[]", "imagecount");
+    url.searchParams.append("fl[]", "downloads");
+    url.searchParams.append("sort[]", "downloads desc");
+    url.searchParams.set("rows", "50");
+    url.searchParams.set("output", "json");
 
-  try {
     const res = await fetch(url.toString(), { headers: { "User-Agent": "SolveBotGPT/1.0" } });
-    if (!res.ok) { console.error("[book] search failed", res.status); return []; }
+    if (!res.ok) { console.error("[book] search failed", res.status); return; }
     const j = await res.json();
     const docs: any[] = j?.response?.docs ?? [];
-    const results: BookResult[] = [];
-    const seen = new Set<string>();
     for (const d of docs) {
-      const pages = Number(d?.imagecount ?? 0);
-      if (!pages || pages < 3) continue; // skip items without readable page scans
-      const id = String(d.identifier);
-      if (seen.has(id)) continue;
+      const id = String(d.identifier ?? "").trim();
+      if (!id || seen.has(id)) continue;
       seen.add(id);
       const title = String(Array.isArray(d.title) ? d.title[0] : d.title ?? "").slice(0, 80);
       const creator = Array.isArray(d.creator) ? d.creator[0] : d.creator ?? null;
+      const pages = Math.max(0, Number(d?.imagecount ?? 0));
       results.push({
         identifier: id,
         title: title || id,
@@ -1767,39 +1824,43 @@ async function archiveSearch(query: string, mode: SearchMode = "any"): Promise<B
       });
       if (results.length >= 10) break;
     }
-    // Fallback: if strict search returned nothing, retry without language filter.
-    if (!results.length && mode !== "title") {
-      const url2 = new URL(ARCHIVE_SEARCH_URL);
-      const esc = query.replace(/([+\-!(){}\[\]^"~*?:\\\/])/g, " ").replace(/\s+/g, " ").trim();
-      const q2 = mode === "author"
-        ? `(creator:(${esc}) OR title:(${esc})) AND mediatype:texts`
-        : `(title:(${esc}) OR creator:(${esc}) OR subject:(${esc})) AND mediatype:texts`;
-      url2.searchParams.set("q", q2);
-      ["identifier", "title", "creator", "imagecount"].forEach((f) => url2.searchParams.append("fl[]", f));
-      url2.searchParams.append("sort[]", "downloads desc");
-      url2.searchParams.set("rows", "50");
-      url2.searchParams.set("output", "json");
-      const r2 = await fetch(url2.toString(), { headers: { "User-Agent": "SolveBotGPT/1.0" } });
-      if (r2.ok) {
-        const j2 = await r2.json();
-        for (const d of (j2?.response?.docs ?? []) as any[]) {
-          const pages = Number(d?.imagecount ?? 0);
-          if (!pages || pages < 3) continue;
-          const id = String(d.identifier);
-          if (seen.has(id)) continue;
-          seen.add(id);
-          const title = String(Array.isArray(d.title) ? d.title[0] : d.title ?? "").slice(0, 80);
-          const creator = Array.isArray(d.creator) ? d.creator[0] : d.creator ?? null;
-          results.push({
-            identifier: id, title: title || id,
-            creator: creator ? String(creator).slice(0, 60) : null, pages,
-          });
-          if (results.length >= 10) break;
-        }
+  };
+
+  try {
+    for (const searchText of candidateQueries) {
+      await appendResults(searchText, true);
+      if (results.length >= 10) break;
+    }
+    // Fallback: if Arabic/language-filtered search is weak, retry without language filter.
+    if (results.length < 5) {
+      for (const searchText of candidateQueries) {
+        await appendResults(searchText, false);
+        if (results.length >= 10) break;
       }
     }
     return results;
   } catch (e) { console.error("[book] search error", e); return []; }
+}
+
+async function inferArchivePageCount(identifier: string, files: any[] | undefined): Promise<number> {
+  const candidates = (files ?? [])
+    .map((f) => String(f?.name ?? ""))
+    .filter((name) => /_djvu\.xml$/i.test(name))
+    .filter((name) => !/_meta|_files/i.test(name));
+
+  for (const name of candidates.slice(0, 3)) {
+    try {
+      const url = `https://archive.org/download/${encodeURIComponent(identifier)}/${encodeURIComponent(name)}`;
+      const r = await fetch(url, { headers: { "User-Agent": "SolveBotGPT/1.0" } });
+      if (!r.ok) continue;
+      const xml = await r.text();
+      const count = (xml.match(/<OBJECT\b/g) ?? []).length;
+      if (count >= 3) return count;
+    } catch (e) {
+      console.error("[book] page-count inference failed", e);
+    }
+  }
+  return 0;
 }
 
 function bookPageUrl(identifier: string, pageIndex: number): string {
@@ -1854,7 +1915,8 @@ async function handleBookSearch(admin: any, senderId: string, query: string, pag
   // Send a plain-text numbered list + Quick Replies so it works on Messenger Lite
   // (generic/carousel templates are not rendered there).
   const lines = results.map((r, i) => {
-    const meta = [r.creator, `${r.pages} صفحة`].filter(Boolean).join(" · ");
+    const pageLabel = r.pages > 0 ? `${r.pages} صفحة` : "صور صفحات متاحة";
+    const meta = [r.creator, pageLabel].filter(Boolean).join(" · ");
     return `${i + 1}. ${r.title}${meta ? `\n   ${meta}` : ""}`;
   });
   const text = `📚 نتائج البحث عن «${query}»:\n\n${lines.join("\n\n")}\n\n👇 اضغط رقم الكتاب من الأزرار بالأسفل، أو اكتب الرقم فقط (مثال: 1) إن لم تظهر لك الأزرار على Facebook Lite.`;
@@ -1886,6 +1948,7 @@ async function handleBookRead(admin: any, senderId: string, identifier: string, 
       if (r.ok) {
         const j = await r.json();
         total = Number(j?.metadata?.imagecount ?? 0);
+        if (!total) total = await inferArchivePageCount(identifier, j?.files ?? []);
         title = String(j?.metadata?.title ?? title).slice(0, 200);
       }
     } catch (_e) { /* ignore */ }
