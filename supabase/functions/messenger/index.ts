@@ -1857,7 +1857,7 @@ async function handleBookSearch(admin: any, senderId: string, query: string, pag
     const meta = [r.creator, `${r.pages} صفحة`].filter(Boolean).join(" · ");
     return `${i + 1}. ${r.title}${meta ? `\n   ${meta}` : ""}`;
   });
-  const text = `📚 نتائج البحث عن «${query}»:\n\n${lines.join("\n\n")}\n\nاضغط رقم الكتاب للقراءة 👇`;
+  const text = `📚 نتائج البحث عن «${query}»:\n\n${lines.join("\n\n")}\n\n👇 اضغط رقم الكتاب من الأزرار بالأسفل، أو اكتب الرقم فقط (مثال: 1) إن لم تظهر لك الأزرار على Facebook Lite.`;
   const quick_replies = results.slice(0, 11).map((r, i) => ({
     content_type: "text",
     title: `${i + 1} 📖`,
