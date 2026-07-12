@@ -1647,3 +1647,177 @@ async function readUrl(url: string): Promise<string> {
 }
 
 
+// ============ Archive.org Book Reader ============
+const BOOK_BATCH_SIZE = 10;
+const ARCHIVE_SEARCH_URL = "https://archive.org/advancedsearch.php";
+const ARCHIVE_METADATA_URL = "https://archive.org/metadata";
+
+type BookResult = { identifier: string; title: string; creator: string | null; pages: number };
+
+async function archiveSearch(query: string): Promise<BookResult[]> {
+  const q = `title:(${query}) AND mediatype:texts AND (language:Arabic OR language:ara OR language:ar)`;
+  const url = new URL(ARCHIVE_SEARCH_URL);
+  url.searchParams.set("q", q);
+  url.searchParams.append("fl[]", "identifier");
+  url.searchParams.append("fl[]", "title");
+  url.searchParams.append("fl[]", "creator");
+  url.searchParams.append("fl[]", "imagecount");
+  url.searchParams.append("sort[]", "downloads desc");
+  url.searchParams.set("rows", "15");
+  url.searchParams.set("output", "json");
+
+  try {
+    const res = await fetch(url.toString(), { headers: { "User-Agent": "SolveBotGPT/1.0" } });
+    if (!res.ok) { console.error("[book] search failed", res.status); return []; }
+    const j = await res.json();
+    const docs: any[] = j?.response?.docs ?? [];
+    const results: BookResult[] = [];
+    for (const d of docs) {
+      const pages = Number(d?.imagecount ?? 0);
+      if (!pages || pages < 3) continue; // skip items without page scans
+      const title = String(Array.isArray(d.title) ? d.title[0] : d.title ?? "").slice(0, 80);
+      const creator = Array.isArray(d.creator) ? d.creator[0] : d.creator ?? null;
+      results.push({ identifier: String(d.identifier), title: title || d.identifier, creator: creator ? String(creator).slice(0, 60) : null, pages });
+      if (results.length >= 5) break;
+    }
+    return results;
+  } catch (e) { console.error("[book] search error", e); return []; }
+}
+
+function bookPageUrl(identifier: string, pageIndex: number): string {
+  // Archive.org page-image endpoint. `n{N}` is 0-indexed. `_w800` bounds width to 800px.
+  return `https://archive.org/download/${encodeURIComponent(identifier)}/page/n${pageIndex}_w800.jpg`;
+}
+
+async function fbSendRaw(senderId: string, message: any): Promise<boolean> {
+  const pageToken = Deno.env.get("FB_PAGE_ACCESS_TOKEN");
+  if (!pageToken) { console.error("[book] FB_PAGE_ACCESS_TOKEN missing"); return false; }
+  try {
+    const r = await fetch(`${FB_API}?access_token=${encodeURIComponent(pageToken)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recipient: { id: senderId }, messaging_type: "RESPONSE", message }),
+    });
+    if (!r.ok) { console.error("[book] FB send", r.status, await r.text()); return false; }
+    return true;
+  } catch (e) { console.error("[book] FB send err", e); return false; }
+}
+
+async function sendBookImage(senderId: string, url: string): Promise<boolean> {
+  return await fbSendRaw(senderId, { attachment: { type: "image", payload: { url, is_reusable: false } } });
+}
+
+async function sendContinueButton(senderId: string, text: string, hasNext: boolean) {
+  const buttons: any[] = [];
+  if (hasNext) buttons.push({ type: "postback", title: "الصفحات التالية ⬅️", payload: "BOOK_NEXT" });
+  buttons.push({ type: "postback", title: "إيقاف القراءة ✖️", payload: "BOOK_STOP" });
+  await fbSendRaw(senderId, {
+    attachment: { type: "template", payload: { template_type: "button", text, buttons } },
+  });
+}
+
+async function handleBookSearch(admin: any, senderId: string, query: string, pageId: string | null, userMsgStart: number) {
+  await sendAndLog(admin, senderId, `🔎 أبحث عن «${query}» في archive.org…`, pageId, userMsgStart);
+  const results = await archiveSearch(query);
+  if (!results.length) {
+    await sendAndLog(admin, senderId, "لم أجد كتاباً مطابقاً بصور صفحات على archive.org 😕 جرّب عنواناً آخر.", pageId);
+    return;
+  }
+  await admin.from("book_search_cache").upsert({
+    facebook_user_id: senderId, results, created_at: new Date().toISOString(),
+  }, { onConflict: "facebook_user_id" });
+
+  const elements = results.map((r) => ({
+    title: r.title.slice(0, 80),
+    subtitle: [r.creator, `${r.pages} صفحة`].filter(Boolean).join(" · ").slice(0, 80),
+    buttons: [{ type: "postback", title: "اقرأ 📖", payload: `BOOK_READ:${r.identifier}` }],
+  }));
+  await fbSendRaw(senderId, {
+    attachment: { type: "template", payload: { template_type: "generic", elements } },
+  });
+  await admin.from("messages").insert({
+    facebook_user_id: senderId, sender_type: "bot",
+    message_text: `[📚 ${results.length} نتائج للبحث: ${query}]`,
+    page_id: pageId,
+  });
+}
+
+async function handleBookRead(admin: any, senderId: string, identifier: string, pageId: string | null) {
+  // Verify the book has pages (from search cache or fresh metadata).
+  const { data: cache } = await admin.from("book_search_cache")
+    .select("results").eq("facebook_user_id", senderId).maybeSingle();
+  const cached = ((cache?.results ?? []) as BookResult[]).find((r) => r.identifier === identifier);
+  let title = cached?.title ?? identifier;
+  let total = cached?.pages ?? 0;
+
+  if (!total) {
+    try {
+      const r = await fetch(`${ARCHIVE_METADATA_URL}/${encodeURIComponent(identifier)}`);
+      if (r.ok) {
+        const j = await r.json();
+        total = Number(j?.metadata?.imagecount ?? 0);
+        title = String(j?.metadata?.title ?? title).slice(0, 200);
+      }
+    } catch (_e) { /* ignore */ }
+  }
+  if (!total) {
+    await sendAndLog(admin, senderId, "عذراً، هذا الكتاب لا يوفّر صور صفحات قابلة للقراءة 😕", pageId);
+    return;
+  }
+
+  await admin.from("book_sessions").upsert({
+    facebook_user_id: senderId, identifier, title, total_pages: total, current_page: 0,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "facebook_user_id" });
+
+  await sendAndLog(admin, senderId, `📖 «${title}»\nإجمالي الصفحات: ${total}\nأرسل الآن أول ${Math.min(BOOK_BATCH_SIZE, total)} صفحات…`, pageId);
+  await sendPageBatch(admin, senderId, pageId);
+}
+
+async function handleBookNext(admin: any, senderId: string, pageId: string | null) {
+  const { data: session } = await admin.from("book_sessions")
+    .select("*").eq("facebook_user_id", senderId).maybeSingle();
+  if (!session) {
+    await sendAndLog(admin, senderId, "لا توجد جلسة قراءة نشطة. اطلب كتاباً جديداً 📚", pageId);
+    return;
+  }
+  await sendPageBatch(admin, senderId, pageId);
+}
+
+async function sendPageBatch(admin: any, senderId: string, pageId: string | null) {
+  const { data: session } = await admin.from("book_sessions")
+    .select("*").eq("facebook_user_id", senderId).maybeSingle();
+  if (!session) return;
+
+  const start: number = session.current_page ?? 0;
+  const total: number = session.total_pages ?? 0;
+  const end = Math.min(start + BOOK_BATCH_SIZE, total);
+
+  let sent = 0;
+  for (let i = start; i < end; i++) {
+    const ok = await sendBookImage(senderId, bookPageUrl(session.identifier, i));
+    if (ok) sent++;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  const newCurrent = start + sent;
+  await admin.from("book_sessions").update({
+    current_page: newCurrent, updated_at: new Date().toISOString(),
+  }).eq("facebook_user_id", senderId);
+
+  const hasNext = newCurrent < total;
+  const label = hasNext
+    ? `الصفحات ${start + 1}-${newCurrent} من ${total}`
+    : `انتهى الكتاب 📖✨ (${newCurrent}/${total})`;
+  await sendContinueButton(senderId, label, hasNext);
+  await admin.from("messages").insert({
+    facebook_user_id: senderId, sender_type: "bot",
+    message_text: `[📖 ${label} — ${session.title ?? session.identifier}]`,
+    page_id: pageId,
+  });
+
+  if (!hasNext) await admin.from("book_sessions").delete().eq("facebook_user_id", senderId);
+}
+
+
+
