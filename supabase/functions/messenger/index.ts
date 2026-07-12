@@ -1199,13 +1199,23 @@ async function handleEvent(ev: any, pageId: string | null) {
     return;
   }
 
-  // === Detect "give me a book/novel X" intent → search archive.org ===
+  // === Detect book / author intent → search archive.org ===
   if (text) {
+    // author intent: "كاتب فلان" / "مؤلف فلان" / "كتب فلان" / "روايات فلان" / "أعمال فلان"
+    const authorMatch = text.match(/^\s*(?:اريد|أريد|ابغى|ابغي|ابعت|ابعث|هات|جيب|ممكن|ابحث(?:\s+لي)?(?:\s+عن)?)?\s*(?:كاتب|مؤلف|كتب|روايات|اعمال|أعمال)\s+(.{2,80})$/iu);
+    if (authorMatch) {
+      const query = authorMatch[1].trim().replace(/[?؟.!،,]+$/, "");
+      if (query.length >= 2) {
+        await handleBookSearch(admin, senderId, query, pageId, userMsgStart, "author");
+        return;
+      }
+    }
+    // title / generic book intent
     const bookMatch = text.match(/^\s*(?:اريد|أريد|ابغى|ابغي|ابعت|ابعث|هات|جيب|ممكن|ابحث(?:\s+لي)?(?:\s+عن)?|اقرأ|اقرا)?\s*(?:كتاب|رواية|قصة|قصه)\s+(.{2,80})$/iu);
     if (bookMatch) {
       const query = bookMatch[1].trim().replace(/[?؟.!،,]+$/, "");
       if (query.length >= 2) {
-        await handleBookSearch(admin, senderId, query, pageId, userMsgStart);
+        await handleBookSearch(admin, senderId, query, pageId, userMsgStart, "any");
         return;
       }
     }
@@ -1669,16 +1679,35 @@ const ARCHIVE_METADATA_URL = "https://archive.org/metadata";
 
 type BookResult = { identifier: string; title: string; creator: string | null; pages: number };
 
-async function archiveSearch(query: string): Promise<BookResult[]> {
-  const q = `title:(${query}) AND mediatype:texts AND (language:Arabic OR language:ara OR language:ar)`;
+type SearchMode = "title" | "author" | "any";
+
+function buildArchiveQuery(query: string, mode: SearchMode): string {
+  // Escape Lucene special characters that break archive.org's query parser.
+  const esc = query.replace(/([+\-!(){}\[\]^"~*?:\\\/])/g, " ").replace(/\s+/g, " ").trim();
+  const langFilter = "(language:Arabic OR language:ara OR language:ar)";
+  const base = "mediatype:texts";
+  if (mode === "author") {
+    // Search across creator + title (some uploads mistakenly put the author in the title).
+    return `(creator:(${esc}) OR title:(${esc})) AND ${base} AND ${langFilter}`;
+  }
+  if (mode === "title") {
+    return `title:(${esc}) AND ${base} AND ${langFilter}`;
+  }
+  // "any" — broad fielded search across title/creator/subject/description.
+  return `(title:(${esc}) OR creator:(${esc}) OR subject:(${esc}) OR description:(${esc})) AND ${base} AND ${langFilter}`;
+}
+
+async function archiveSearch(query: string, mode: SearchMode = "any"): Promise<BookResult[]> {
+  const q = buildArchiveQuery(query, mode);
   const url = new URL(ARCHIVE_SEARCH_URL);
   url.searchParams.set("q", q);
   url.searchParams.append("fl[]", "identifier");
   url.searchParams.append("fl[]", "title");
   url.searchParams.append("fl[]", "creator");
   url.searchParams.append("fl[]", "imagecount");
+  url.searchParams.append("fl[]", "downloads");
   url.searchParams.append("sort[]", "downloads desc");
-  url.searchParams.set("rows", "15");
+  url.searchParams.set("rows", "50");
   url.searchParams.set("output", "json");
 
   try {
@@ -1687,13 +1716,53 @@ async function archiveSearch(query: string): Promise<BookResult[]> {
     const j = await res.json();
     const docs: any[] = j?.response?.docs ?? [];
     const results: BookResult[] = [];
+    const seen = new Set<string>();
     for (const d of docs) {
       const pages = Number(d?.imagecount ?? 0);
-      if (!pages || pages < 3) continue; // skip items without page scans
+      if (!pages || pages < 3) continue; // skip items without readable page scans
+      const id = String(d.identifier);
+      if (seen.has(id)) continue;
+      seen.add(id);
       const title = String(Array.isArray(d.title) ? d.title[0] : d.title ?? "").slice(0, 80);
       const creator = Array.isArray(d.creator) ? d.creator[0] : d.creator ?? null;
-      results.push({ identifier: String(d.identifier), title: title || d.identifier, creator: creator ? String(creator).slice(0, 60) : null, pages });
-      if (results.length >= 5) break;
+      results.push({
+        identifier: id,
+        title: title || id,
+        creator: creator ? String(creator).slice(0, 60) : null,
+        pages,
+      });
+      if (results.length >= 10) break;
+    }
+    // Fallback: if strict search returned nothing, retry without language filter.
+    if (!results.length && mode !== "title") {
+      const url2 = new URL(ARCHIVE_SEARCH_URL);
+      const esc = query.replace(/([+\-!(){}\[\]^"~*?:\\\/])/g, " ").replace(/\s+/g, " ").trim();
+      const q2 = mode === "author"
+        ? `(creator:(${esc}) OR title:(${esc})) AND mediatype:texts`
+        : `(title:(${esc}) OR creator:(${esc}) OR subject:(${esc})) AND mediatype:texts`;
+      url2.searchParams.set("q", q2);
+      ["identifier", "title", "creator", "imagecount"].forEach((f) => url2.searchParams.append("fl[]", f));
+      url2.searchParams.append("sort[]", "downloads desc");
+      url2.searchParams.set("rows", "50");
+      url2.searchParams.set("output", "json");
+      const r2 = await fetch(url2.toString(), { headers: { "User-Agent": "SolveBotGPT/1.0" } });
+      if (r2.ok) {
+        const j2 = await r2.json();
+        for (const d of (j2?.response?.docs ?? []) as any[]) {
+          const pages = Number(d?.imagecount ?? 0);
+          if (!pages || pages < 3) continue;
+          const id = String(d.identifier);
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const title = String(Array.isArray(d.title) ? d.title[0] : d.title ?? "").slice(0, 80);
+          const creator = Array.isArray(d.creator) ? d.creator[0] : d.creator ?? null;
+          results.push({
+            identifier: id, title: title || id,
+            creator: creator ? String(creator).slice(0, 60) : null, pages,
+          });
+          if (results.length >= 10) break;
+        }
+      }
     }
     return results;
   } catch (e) { console.error("[book] search error", e); return []; }
@@ -1733,11 +1802,12 @@ async function sendContinueButton(senderId: string, text: string, hasNext: boole
   await fbSendRaw(senderId, { text, quick_replies });
 }
 
-async function handleBookSearch(admin: any, senderId: string, query: string, pageId: string | null, userMsgStart: number) {
-  await sendAndLog(admin, senderId, `🔎 أبحث عن «${query}» في archive.org…`, pageId, userMsgStart);
-  const results = await archiveSearch(query);
+async function handleBookSearch(admin: any, senderId: string, query: string, pageId: string | null, userMsgStart: number, mode: SearchMode = "any") {
+  const label = mode === "author" ? `مؤلف «${query}»` : `«${query}»`;
+  await sendAndLog(admin, senderId, `🔎 أبحث عن ${label} في archive.org…`, pageId, userMsgStart);
+  const results = await archiveSearch(query, mode);
   if (!results.length) {
-    await sendAndLog(admin, senderId, "لم أجد كتاباً مطابقاً بصور صفحات على archive.org 😕 جرّب عنواناً آخر.", pageId);
+    await sendAndLog(admin, senderId, "لم أجد كتاباً مطابقاً بصور صفحات على archive.org 😕 جرّب اسماً آخر أو تهجئة مختلفة.", pageId);
     return;
   }
   await admin.from("book_search_cache").upsert({
