@@ -1951,10 +1951,10 @@ async function sendContinueButton(senderId: string, text: string, hasNext: boole
   await fbSendRaw(senderId, { text: (text + hint).slice(0, 2000), quick_replies });
 }
 
-async function handleBookSearch(admin: any, senderId: string, query: string, pageId: string | null, userMsgStart: number, mode: SearchMode = "any") {
+async function handleBookSearch(admin: any, senderId: string, query: string, pageId: string | null, userMsgStart: number, mode: SearchMode = "any", variants: string[] = []) {
   const label = mode === "author" ? `مؤلف «${query}»` : `«${query}»`;
   await sendAndLog(admin, senderId, `🔎 أبحث عن ${label} في archive.org…`, pageId, userMsgStart);
-  const results = await archiveSearch(query, mode);
+  const results = await archiveSearch(query, mode, variants);
   if (!results.length) {
     await sendAndLog(admin, senderId, "لم أجد كتاباً مطابقاً بصور صفحات على archive.org 😕 جرّب اسماً آخر أو تهجئة مختلفة.", pageId);
     return;
