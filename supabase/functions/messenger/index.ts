@@ -965,6 +965,128 @@ async function generateImage(senderId: string, prompt: string, admin: any, arabi
   }
 }
 
+// ============ IMAGE EDITING (Lovable AI Gateway — Gemini Nano Banana 2) ============
+// Edits a user-supplied image (retouch / enhance / change something) while
+// keeping the original composition. Uses google/gemini-3.1-flash-image because
+// Mistral does not expose an image-editing model.
+const EDIT_IMAGE_RE = /(عدّل|عدل|حسّن|حسن|طوّر|طور|غيّر|غير|ازل|أزل|احذف|امسح|أضف|اضف|اجعل|حوّل|حول|لوّن|لون|ارسم فوق|رتوش|فلتر|جودة|حدة|اصلح|أصلح|نظّف|نظف|edit|enhance|retouch|upscale|improve|remove|colori[sz]e|restore|fix)/i;
+
+function shouldEditImage(text: string): boolean {
+  if (!text) return false;
+  return EDIT_IMAGE_RE.test(text);
+}
+
+async function editUserImage(
+  admin: any,
+  senderId: string,
+  pageId: string,
+  pageToken: string,
+  sourceUrl: string,
+  instruction: string,
+  userMsgStart: number,
+): Promise<boolean> {
+  const key = Deno.env.get("LOVABLE_API_KEY");
+  if (!key) {
+    console.error("[messenger] edit_image: LOVABLE_API_KEY missing");
+    await sendAndLog(admin, senderId, "خدمة تعديل الصور غير متاحة حالياً.", pageId, userMsgStart);
+    return false;
+  }
+  try {
+    // 1) Download original image and encode as data URL
+    const imgRes = await fetch(sourceUrl);
+    if (!imgRes.ok) {
+      await sendAndLog(admin, senderId, "تعذّر تحميل الصورة من ماسنجر، أعد الإرسال من فضلك.", pageId, userMsgStart);
+      return false;
+    }
+    const mime = imgRes.headers.get("content-type") || "image/jpeg";
+    const bytes = new Uint8Array(await imgRes.arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    const b64 = btoa(bin);
+    const dataUrl = `data:${mime};base64,${b64}`;
+
+    // 2) Call Lovable AI Gateway image editing (Gemini Nano Banana 2)
+    const editPrompt = `You are editing the attached photo. Apply ONLY this change requested by the user, keep everything else (subjects, composition, background, colors, lighting) exactly as it is. Return the edited image at the same aspect ratio and resolution.\n\nUser request (Arabic, translate silently): ${instruction}`;
+    const gwRes = await fetch("https://ai.gateway.lovable.dev/v1/images/generations", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "google/gemini-3.1-flash-image",
+        messages: [
+          { role: "user", content: [
+            { type: "text", text: editPrompt },
+            { type: "image_url", image_url: { url: dataUrl } },
+          ]},
+        ],
+        modalities: ["image", "text"],
+      }),
+    });
+    if (!gwRes.ok) {
+      const t = await gwRes.text();
+      console.error("[messenger] edit_image gateway error", gwRes.status, t.slice(0, 300));
+      if (gwRes.status === 429) {
+        await sendAndLog(admin, senderId, "الخدمة مزدحمة الآن، جرّب بعد قليل 🙏", pageId, userMsgStart);
+      } else if (gwRes.status === 402) {
+        await sendAndLog(admin, senderId, "انتهى رصيد خدمة تعديل الصور، تواصل مع المشرف.", pageId, userMsgStart);
+      } else {
+        await sendAndLog(admin, senderId, "تعذّر تعديل الصورة، حاول بوصف أوضح.", pageId, userMsgStart);
+      }
+      return false;
+    }
+    const j = await gwRes.json();
+    const outB64: string | undefined = j?.data?.[0]?.b64_json;
+    if (!outB64) {
+      console.error("[messenger] edit_image no b64 in response", JSON.stringify(j).slice(0, 400));
+      await sendAndLog(admin, senderId, "لم أستطع توليد نسخة معدّلة، حاول بطلب أبسط.", pageId, userMsgStart);
+      return false;
+    }
+
+    // 3) Decode & upload to bot-media
+    const outBinStr = atob(outB64);
+    const outBuf = new Uint8Array(outBinStr.length);
+    for (let i = 0; i < outBinStr.length; i++) outBuf[i] = outBinStr.charCodeAt(i);
+    const path = `edits/${senderId}/${Date.now()}.png`;
+    const { error: upErr } = await admin.storage.from("bot-media").upload(path, outBuf, {
+      contentType: "image/png", upsert: false,
+    });
+    if (upErr) {
+      console.error("[messenger] edit_image upload failed", upErr);
+      await sendAndLog(admin, senderId, "خطأ داخلي أثناء حفظ الصورة.", pageId, userMsgStart);
+      return false;
+    }
+    const { data: signed } = await admin.storage.from("bot-media").createSignedUrl(path, 3600);
+    if (!signed?.signedUrl) {
+      await sendAndLog(admin, senderId, "خطأ في تجهيز الصورة للإرسال.", pageId, userMsgStart);
+      return false;
+    }
+
+    // 4) Send to Facebook
+    const fbRes = await fetch(`${FB_API}?access_token=${encodeURIComponent(pageToken)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipient: { id: senderId },
+        messaging_type: "RESPONSE",
+        message: { attachment: { type: "image", payload: { url: signed.signedUrl, is_reusable: false } } },
+      }),
+    });
+    if (!fbRes.ok) {
+      const t = await fbRes.text();
+      console.error("[messenger] edit_image FB send failed", fbRes.status, t);
+      await sendAndLog(admin, senderId, "تعذّر إرسال الصورة إلى ماسنجر.", pageId, userMsgStart);
+      return false;
+    }
+    await admin.from("messages").insert({
+      facebook_user_id: senderId, sender_type: "bot", page_id: pageId,
+      message_text: `🖼️ [صورة معدّلة أُرسلت] ${instruction.slice(0, 120)}`,
+    });
+    return true;
+  } catch (err: any) {
+    console.error("[messenger] edit_image error", err);
+    await sendAndLog(admin, senderId, "حدث خطأ أثناء تعديل الصورة.", pageId, userMsgStart);
+    return false;
+  }
+}
+
 // ============ MAIN ============
 
 Deno.serve(async (req) => {
