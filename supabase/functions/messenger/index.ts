@@ -903,7 +903,7 @@ async function generateImage(senderId: string, prompt: string, admin: any, arabi
       console.error("[messenger] file download failed", fileRes.status);
       return JSON.stringify({ ok: false, error: "download_failed" });
     }
-    let imgBuf = new Uint8Array(await fileRes.arrayBuffer());
+    let imgBuf: Uint8Array<ArrayBufferLike> = new Uint8Array(await fileRes.arrayBuffer());
 
     // If the user requested Arabic text in the image, draw it as an overlay
     // using a real Arabic font (Mistral's image model can't render Arabic correctly).
