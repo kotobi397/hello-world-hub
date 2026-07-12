@@ -1082,7 +1082,27 @@ async function handleEvent(ev: any, pageId: string | null) {
     }
   }
 
+  // === Postback handling (book reader buttons) ===
+  const postbackPayload: string | undefined = ev?.postback?.payload;
+  if (postbackPayload) {
+    if (postbackPayload.startsWith("BOOK_READ:")) {
+      const identifier = postbackPayload.slice("BOOK_READ:".length);
+      await handleBookRead(admin, senderId, identifier, pageId);
+      return;
+    }
+    if (postbackPayload === "BOOK_NEXT") {
+      await handleBookNext(admin, senderId, pageId);
+      return;
+    }
+    if (postbackPayload === "BOOK_STOP") {
+      await admin.from("book_sessions").delete().eq("facebook_user_id", senderId);
+      await sendAndLog(admin, senderId, "تم إيقاف القراءة ✅", pageId);
+      return;
+    }
+  }
+
   let text: string = (ev?.message?.text ?? "").trim();
+
   const attachments: any[] = ev?.message?.attachments ?? [];
   const imageUrls: string[] = attachments
     .filter((a) => a?.type === "image" && a?.payload?.url)
