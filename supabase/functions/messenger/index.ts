@@ -1332,6 +1332,17 @@ async function handleEvent(ev: any, pageId: string | null) {
     return;
   }
 
+  // Image + edit-intent text → run Gemini image editor and return.
+  if (imageUrls.length > 0 && text && shouldEditImage(text)) {
+    const pageToken = await getPageToken(admin, pageId);
+    if (pageToken) {
+      const ok = await editUserImage(admin, senderId, pageId, pageToken, imageUrls[0], text, userMsgStart);
+      if (ok) return;
+      // on failure editUserImage already sent an error message
+      return;
+    }
+  }
+
   // === Text-command fallback for Facebook Lite / old clients that don't render quick replies ===
   if (text) {
     const normalized = text.replace(/[.،,!؟?]+$/g, "").trim();
