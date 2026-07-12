@@ -2061,18 +2061,86 @@ function bookPageUrl(identifier: string, pageIndex: number): string {
   return `https://archive.org/download/${encodeURIComponent(identifier)}/page/n${pageIndex}_w800.jpg`;
 }
 
+// ---- Global Facebook Send API rate limiter --------------------------------
+// FB Messenger's page-level cap is ~250 calls/sec. We stay well below with a
+// shared sliding-window reservation in Postgres so ALL concurrent invocations
+// (many users at once) respect the same budget, plus a per-isolate serial
+// gate to avoid bursts inside one function instance, plus retry-with-backoff
+// on FB rate/temporary errors.
+const FB_GLOBAL_MAX_PER_SEC = 180;      // shared across all invocations
+const FB_PER_ISOLATE_MIN_GAP_MS = 25;   // ~40 req/s max per isolate
+let __fbLastSendTs = 0;
+let __fbSerialChain: Promise<void> = Promise.resolve();
+
+async function __fbIsolateGate(): Promise<void> {
+  const prev = __fbSerialChain;
+  let release!: () => void;
+  __fbSerialChain = new Promise<void>((r) => { release = r; });
+  await prev;
+  const now = Date.now();
+  const wait = Math.max(0, __fbLastSendTs + FB_PER_ISOLATE_MIN_GAP_MS - now);
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  __fbLastSendTs = Date.now();
+  // release next in line immediately (they'll still wait for the gap)
+  release();
+}
+
+async function __fbReserveGlobal(): Promise<void> {
+  // Try to reserve a slot in the shared 1-second window. If full, wait and retry.
+  const admin = getAdminClient();
+  for (let attempt = 0; attempt < 40; attempt++) {
+    try {
+      const { data, error } = await admin.rpc("fb_rate_reserve", {
+        _max: FB_GLOBAL_MAX_PER_SEC, _window_ms: 1000,
+      });
+      if (!error && data === true) return;
+    } catch (_e) { /* fail-open below on repeated errors */ }
+    await new Promise((r) => setTimeout(r, 120 + Math.floor(Math.random() * 80)));
+  }
+  // Fail-open after ~5s — better to deliver late than to drop a message.
+}
+
+function __fbIsRateError(status: number, bodyText: string): boolean {
+  if (status === 429 || status === 613) return true;
+  // FB error codes: 4 = app rate, 17 = user rate, 32 = page rate, 613 = calls to this api have exceeded the rate limit
+  return /"code"\s*:\s*(4|17|32|613)\b/.test(bodyText) ||
+         /"error_subcode"\s*:\s*(2018022|2018109)/.test(bodyText);
+}
+
 async function fbSendRaw(senderId: string, message: any): Promise<boolean> {
   const pageToken = Deno.env.get("FB_PAGE_ACCESS_TOKEN");
   if (!pageToken) { console.error("[book] FB_PAGE_ACCESS_TOKEN missing"); return false; }
-  try {
-    const r = await fetch(`${FB_API}?access_token=${encodeURIComponent(pageToken)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ recipient: { id: senderId }, messaging_type: "RESPONSE", message }),
-    });
-    if (!r.ok) { console.error("[book] FB send", r.status, await r.text()); return false; }
-    return true;
-  } catch (e) { console.error("[book] FB send err", e); return false; }
+
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await __fbIsolateGate();
+    await __fbReserveGlobal();
+    try {
+      const r = await fetch(`${FB_API}?access_token=${encodeURIComponent(pageToken)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recipient: { id: senderId }, messaging_type: "RESPONSE", message }),
+      });
+      if (r.ok) return true;
+      const bodyText = await r.text();
+      if (__fbIsRateError(r.status, bodyText) && attempt < maxAttempts) {
+        const backoff = Math.min(8000, 400 * Math.pow(2, attempt - 1)) + Math.floor(Math.random() * 250);
+        console.warn(`[book] FB rate-limited (status=${r.status}) attempt ${attempt}, backoff ${backoff}ms`);
+        await new Promise((res) => setTimeout(res, backoff));
+        continue;
+      }
+      console.error("[book] FB send", r.status, bodyText.slice(0, 400));
+      return false;
+    } catch (e) {
+      console.error("[book] FB send err", e);
+      if (attempt < maxAttempts) {
+        await new Promise((res) => setTimeout(res, 300 * attempt));
+        continue;
+      }
+      return false;
+    }
+  }
+  return false;
 }
 
 async function sendBookImage(senderId: string, url: string): Promise<boolean> {
@@ -2183,7 +2251,7 @@ async function sendPageBatch(admin: any, senderId: string, pageId: string | null
   for (let i = start; i < end; i++) {
     const ok = await sendBookImage(senderId, bookPageUrl(session.identifier, i));
     if (ok) sent++;
-    await new Promise((r) => setTimeout(r, 300));
+    // Pacing is now handled globally by fbSendRaw's shared rate limiter.
   }
 
   const newCurrent = start + sent;
