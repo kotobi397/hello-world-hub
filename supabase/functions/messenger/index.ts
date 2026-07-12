@@ -1774,6 +1774,55 @@ function expandBookSearchQueries(query: string, mode: SearchMode): string[] {
   return uniqueSearchQueries(variants);
 }
 
+async function inferBookSearchIntent(
+  originalText: string,
+  fallbackQuery: string,
+  fallbackMode: SearchMode,
+): Promise<{ query: string; mode: SearchMode; variants: string[] }> {
+  const baseQuery = normalizeArchiveSearchText(fallbackQuery);
+  const fallback = { query: baseQuery, mode: fallbackMode, variants: expandBookSearchQueries(baseQuery, fallbackMode) };
+  const key = await getMistralKey();
+  if (!key) return fallback;
+
+  try {
+    const res = await fetch(MISTRAL_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: "mistral-small-latest",
+        temperature: 0,
+        max_tokens: 220,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              'أنت تفهم طلبات البحث عن الكتب في archive.org. استخرج هل يبحث المستخدم عن مؤلف أم عنوان. أعد JSON فقط: {"mode":"author|title|any","query":"أفضل عبارة بحث قصيرة","variants":["مرادفات وأسماء بديلة وتهجئات عربية/إنجليزية وعناوين كتب مشهورة إن كان مؤلفاً"]}. إذا قال "كتاب فيودور دوستويفسكي" فهذا غالباً مؤلف؛ استخدم query="فيودور دوستويفسكي" وأضف variants مثل "فيدور دوستويفسكي", "دوستويفسكي", "Dostoevsky", "Dostoyevsky", وأسماء كتبه العربية المشهورة. لا تضف شرحاً.',
+          },
+          { role: "user", content: originalText.slice(0, 500) },
+        ],
+      }),
+    });
+    if (!res.ok) return fallback;
+    const data = await res.json();
+    const raw = data?.choices?.[0]?.message?.content;
+    if (!raw) return fallback;
+    let parsed: any = null;
+    try { parsed = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return fallback; }
+    const mode: SearchMode = ["author", "title", "any"].includes(parsed?.mode) ? parsed.mode : fallbackMode;
+    const query = normalizeArchiveSearchText(String(parsed?.query || baseQuery));
+    const aiVariants = Array.isArray(parsed?.variants) ? parsed.variants.map((v: any) => String(v)) : [];
+    return {
+      query: query || baseQuery,
+      mode,
+      variants: uniqueSearchQueries([query || baseQuery, ...aiVariants, ...expandBookSearchQueries(query || baseQuery, mode)]),
+    };
+  } catch (e) {
+    console.error("[book] intent inference error", e);
+    return fallback;
+  }
+}
+
 function buildArchiveQuery(query: string, mode: SearchMode, withLanguageFilter = true): string {
   // Escape Lucene special characters that break archive.org's query parser.
   const esc = query.replace(/([+\-!(){}\[\]^"~*?:\\\/])/g, " ").replace(/\s+/g, " ").trim();
@@ -1791,8 +1840,8 @@ function buildArchiveQuery(query: string, mode: SearchMode, withLanguageFilter =
   return `(title:(${esc}) OR creator:(${esc}) OR subject:(${esc}) OR description:(${esc})) AND ${base}${suffix}`;
 }
 
-async function archiveSearch(query: string, mode: SearchMode = "any"): Promise<BookResult[]> {
-  const candidateQueries = expandBookSearchQueries(query, mode);
+async function archiveSearch(query: string, mode: SearchMode = "any", variants: string[] = []): Promise<BookResult[]> {
+  const candidateQueries = uniqueSearchQueries([query, ...variants, ...expandBookSearchQueries(query, mode)]);
   const results: BookResult[] = [];
   const seen = new Set<string>();
   const appendResults = async (searchText: string, withLanguageFilter: boolean) => {
