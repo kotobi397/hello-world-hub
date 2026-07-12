@@ -1240,7 +1240,8 @@ async function handleEvent(ev: any, pageId: string | null) {
     if (authorMatch) {
       const query = authorMatch[1].trim().replace(/[?؟.!،,]+$/, "");
       if (query.length >= 2) {
-        await handleBookSearch(admin, senderId, query, pageId, userMsgStart, "author");
+        const intent = await inferBookSearchIntent(text, query, "author");
+        await handleBookSearch(admin, senderId, intent.query, pageId, userMsgStart, intent.mode, intent.variants);
         return;
       }
     }
@@ -1249,7 +1250,8 @@ async function handleEvent(ev: any, pageId: string | null) {
     if (bookMatch) {
       const query = bookMatch[1].trim().replace(/[?؟.!،,]+$/, "");
       if (query.length >= 2) {
-        await handleBookSearch(admin, senderId, query, pageId, userMsgStart, "any");
+        const intent = await inferBookSearchIntent(text, query, "any");
+        await handleBookSearch(admin, senderId, intent.query, pageId, userMsgStart, intent.mode, intent.variants);
         return;
       }
     }
