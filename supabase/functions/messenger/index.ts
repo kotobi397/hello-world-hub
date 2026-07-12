@@ -53,22 +53,26 @@ async function getMistralKey(): Promise<string | null> {
 async function moderateMessage(text: string): Promise<{ reason: string } | null> {
   const key = await getMistralKey();
   if (!key) return null; // fail-open if key missing, to avoid false blocks
+
+  const clean = (text || "").trim();
+  if (clean.length < 2) return null; // too short to judge — avoid false positives
+
   try {
     const res = await fetch(MISTRAL_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
-        model: "mistral-small-latest",
+        model: "mistral-large-latest",
         temperature: 0,
-        max_tokens: 60,
+        max_tokens: 120,
         response_format: { type: "json_object" },
         messages: [
           {
             role: "system",
             content:
-              'أنت مصنّف محتوى صارم. اقرأ رسالة المستخدم واحكم فقط: هل تحوي شتائم أو سبّاً أو إهانة أو تحرشاً أو خطاباً عدائياً/عنصرياً/طائفياً/جنسياً فاحشاً موجّهاً للبوت أو لأي شخص؟ الشكاوى العادية والغضب المهذّب والانتقاد ليست إهانة. أعد JSON فقط بالشكل: {"unsafe": true|false, "reason": "insult|profanity|harassment|hate|sexual|other"}. لا شيء آخر.',
+              'أنت مصنّف محتوى دقيق جداً لبوت عربي. مهمتك: هل الرسالة تحوي إساءة صريحة موجّهة لشخص/فئة/البوت (شتيمة، سب، قذف، تحرش جنسي، تهديد، خطاب كراهية عنصري/ديني/طائفي، ألفاظ جنسية فاحشة)؟\n\nقواعد صارمة (يجب اتباعها حرفياً):\n1. لا تحكم بالإساءة إلا إذا كان هناك لفظ صريح واضح أو نية واضحة للإهانة. عند أي شك: safe.\n2. الغضب، الشكوى، الانتقاد، رفض الخدمة، «لا يعجبني»، «البوت غبي/سيء/لا يفهم/فاشل»، «لا يعمل» = ليست إساءة، هذه شكاوى مشروعة.\n3. الأسئلة الدينية أو الحساسة أو المواضيع الجدلية = ليست إساءة.\n4. الكلمات القصيرة أو غير الواضحة أو الأحرف العشوائية أو التحية أو الرموز = safe.\n5. طلب كتاب أو محتوى (حتى لو كان اسم الكتاب فيه لفظ قوي) = safe.\n6. ذكر لفظ فاحش في سياق اقتباس/سؤال/استفسار وليس كإهانة = safe.\n7. اللغة العامية القوية بدون شتم صريح (مثل «يا رجل»، «والله») = safe.\n\nأمثلة safe: «البوت لا يعمل»، «هذا سيء»، «لم يعجبني الرد»، «أنت لا تفهم»، «مرحبا»، «كتاب دوستويفسكي»، «ما رأيك في...».\nأمثلة unsafe: شتائم صريحة مباشرة، ألفاظ جنسية موجّهة، تهديد بالأذى، إهانة عرقية/دينية صريحة.\n\nأعد JSON فقط: {"unsafe": true|false, "confidence": 0.0-1.0, "reason": "insult|profanity|harassment|hate|sexual|threat|other"}. لا تُضِف نصاً آخر.',
           },
-          { role: "user", content: text.slice(0, 1000) },
+          { role: "user", content: clean.slice(0, 1000) },
         ],
       }),
     });
@@ -78,13 +82,20 @@ async function moderateMessage(text: string): Promise<{ reason: string } | null>
     if (!raw) return null;
     let parsed: any = null;
     try { parsed = typeof raw === "string" ? JSON.parse(raw) : raw; } catch { return null; }
-    if (parsed?.unsafe === true) return { reason: String(parsed.reason || "inappropriate_language") };
+
+    // Require BOTH explicit unsafe=true AND high confidence to block.
+    // This eliminates the false positives the user is complaining about.
+    const conf = Number(parsed?.confidence ?? 0);
+    if (parsed?.unsafe === true && conf >= 0.85) {
+      return { reason: String(parsed.reason || "inappropriate_language") };
+    }
     return null;
   } catch (e) {
     console.error("[messenger] moderation error", e);
     return null;
   }
 }
+
 
 // Fetch Messenger user profile from Graph API and upsert into facebook_profiles.
 // Skips when a fresh (<7 days) profile is already cached.
