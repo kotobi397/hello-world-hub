@@ -327,6 +327,21 @@ export type Database = {
         }
         Relationships: []
       }
+      fb_send_rate: {
+        Row: {
+          id: number
+          ts: string
+        }
+        Insert: {
+          id?: number
+          ts?: string
+        }
+        Update: {
+          id?: number
+          ts?: string
+        }
+        Relationships: []
+      }
       message_feedback: {
         Row: {
           created_at: string
@@ -603,6 +618,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      fb_rate_reserve: {
+        Args: { _max: number; _window_ms?: number }
+        Returns: boolean
+      }
       get_bot_stats: { Args: { period_days?: number }; Returns: Json }
       has_role: {
         Args: {
