@@ -2238,15 +2238,17 @@ async function handleBookRead(admin: any, senderId: string, identifier: string, 
   let total = cached?.pages ?? 0;
 
   if (!total) {
+    let files: any[] = [];
     try {
       const r = await fetch(`${ARCHIVE_METADATA_URL}/${encodeURIComponent(identifier)}`);
       if (r.ok) {
         const j = await r.json();
         total = Number(j?.metadata?.imagecount ?? 0);
-        if (!total) total = await inferArchivePageCount(identifier, j?.files ?? []);
+        files = Array.isArray(j?.files) ? j.files : [];
         title = String(j?.metadata?.title ?? title).slice(0, 200);
       }
-    } catch (_e) { /* ignore */ }
+    } catch (_e) { /* ignore — fall through to probe */ }
+    if (!total) total = await inferArchivePageCount(identifier, files);
   }
   if (!total) {
     await sendAndLog(admin, senderId, "عذراً، هذا الكتاب لا يوفّر صور صفحات قابلة للقراءة 😕", pageId);
