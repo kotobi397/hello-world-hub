@@ -2036,12 +2036,24 @@ async function archiveSearch(query: string, mode: SearchMode = "any", variants: 
 }
 
 async function inferArchivePageCount(identifier: string, files: any[] | undefined): Promise<number> {
-  const candidates = (files ?? [])
-    .map((f) => String(f?.name ?? ""))
-    .filter((name) => /_djvu\.xml$/i.test(name))
-    .filter((name) => !/_meta|_files/i.test(name));
+  const names = (files ?? []).map((f) => String(f?.name ?? "")).filter(Boolean);
 
-  for (const name of candidates.slice(0, 3)) {
+  // 1) scandata.xml — most reliable page count source on archive.org.
+  const scandata = names.filter((n) => /_scandata\.xml$/i.test(n) && !/_meta|_files/i.test(n));
+  for (const name of scandata.slice(0, 2)) {
+    try {
+      const url = `https://archive.org/download/${encodeURIComponent(identifier)}/${encodeURIComponent(name)}`;
+      const r = await fetch(url, { headers: { "User-Agent": "SolveBotGPT/1.0" } });
+      if (!r.ok) continue;
+      const xml = await r.text();
+      const count = (xml.match(/<page\b/gi) ?? []).length;
+      if (count >= 3) return count;
+    } catch (_e) { /* try next */ }
+  }
+
+  // 2) djvu.xml — count <OBJECT> per page.
+  const djvu = names.filter((n) => /_djvu\.xml$/i.test(n) && !/_meta|_files/i.test(n));
+  for (const name of djvu.slice(0, 2)) {
     try {
       const url = `https://archive.org/download/${encodeURIComponent(identifier)}/${encodeURIComponent(name)}`;
       const r = await fetch(url, { headers: { "User-Agent": "SolveBotGPT/1.0" } });
@@ -2049,11 +2061,33 @@ async function inferArchivePageCount(identifier: string, files: any[] | undefine
       const xml = await r.text();
       const count = (xml.match(/<OBJECT\b/g) ?? []).length;
       if (count >= 3) return count;
-    } catch (e) {
-      console.error("[book] page-count inference failed", e);
-    }
+    } catch (_e) { /* try next */ }
   }
-  return 0;
+
+  // 3) Fallback: probe the page-image endpoint. If page 0 exists, binary-search
+  // for the highest valid page — this handles books with jp2.zip/pdf-only files
+  // where no textual page-count metadata is exposed.
+  const probe = async (idx: number): Promise<boolean> => {
+    try {
+      const r = await fetch(bookPageUrl(identifier, idx), {
+        method: "GET",
+        headers: { "User-Agent": "SolveBotGPT/1.0", Range: "bytes=0-0" },
+      });
+      // Archive returns 200/206 for real page images, 404/416 for missing pages.
+      return r.status === 200 || r.status === 206;
+    } catch { return false; }
+  };
+  if (!(await probe(0))) return 0;
+  // Exponential ramp to find an upper bound (cap 4000 pages).
+  let lo = 0, hi = 1;
+  while (hi <= 4000 && (await probe(hi))) { lo = hi; hi *= 2; }
+  hi = Math.min(hi, 4000);
+  // Binary search between lo (exists) and hi (missing or cap).
+  while (lo + 1 < hi) {
+    const mid = (lo + hi) >> 1;
+    if (await probe(mid)) lo = mid; else hi = mid;
+  }
+  return lo + 1;
 }
 
 function bookPageUrl(identifier: string, pageIndex: number): string {
