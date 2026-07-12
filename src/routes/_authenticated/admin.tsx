@@ -206,10 +206,13 @@ function Analytics() {
     const out: { date: string; bot: number; user: number; sessions: number }[] = [];
     const nowUtc = new Date();
     const todayUtc = Date.UTC(nowUtc.getUTCFullYear(), nowUtc.getUTCMonth(), nowUtc.getUTCDate());
+    const weekdays = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
     for (let i = period - 1; i >= 0; i--) {
-      const d = new Date(todayUtc - i * 86400_000).toISOString().slice(0, 10);
+      const dateObj = new Date(todayUtc - i * 86400_000);
+      const d = dateObj.toISOString().slice(0, 10);
       const row = map.get(d);
-      out.push({ date: d.slice(5), bot: Number(row?.bot ?? 0), user: Number(row?.user ?? 0), sessions: Number(row?.sessions ?? 0) });
+      const label = period === 7 ? weekdays[dateObj.getUTCDay()] : d.slice(5);
+      out.push({ date: label, bot: Number(row?.bot ?? 0), user: Number(row?.user ?? 0), sessions: Number(row?.sessions ?? 0) });
     }
     return out;
   }, [rpcData, period]);
