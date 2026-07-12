@@ -2251,7 +2251,7 @@ async function sendPageBatch(admin: any, senderId: string, pageId: string | null
   for (let i = start; i < end; i++) {
     const ok = await sendBookImage(senderId, bookPageUrl(session.identifier, i));
     if (ok) sent++;
-    await new Promise((r) => setTimeout(r, 300));
+    // Pacing is now handled globally by fbSendRaw's shared rate limiter.
   }
 
   const newCurrent = start + sent;
