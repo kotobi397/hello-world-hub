@@ -1802,11 +1802,12 @@ async function sendContinueButton(senderId: string, text: string, hasNext: boole
   await fbSendRaw(senderId, { text, quick_replies });
 }
 
-async function handleBookSearch(admin: any, senderId: string, query: string, pageId: string | null, userMsgStart: number) {
-  await sendAndLog(admin, senderId, `🔎 أبحث عن «${query}» في archive.org…`, pageId, userMsgStart);
-  const results = await archiveSearch(query);
+async function handleBookSearch(admin: any, senderId: string, query: string, pageId: string | null, userMsgStart: number, mode: SearchMode = "any") {
+  const label = mode === "author" ? `مؤلف «${query}»` : `«${query}»`;
+  await sendAndLog(admin, senderId, `🔎 أبحث عن ${label} في archive.org…`, pageId, userMsgStart);
+  const results = await archiveSearch(query, mode);
   if (!results.length) {
-    await sendAndLog(admin, senderId, "لم أجد كتاباً مطابقاً بصور صفحات على archive.org 😕 جرّب عنواناً آخر.", pageId);
+    await sendAndLog(admin, senderId, "لم أجد كتاباً مطابقاً بصور صفحات على archive.org 😕 جرّب اسماً آخر أو تهجئة مختلفة.", pageId);
     return;
   }
   await admin.from("book_search_cache").upsert({
