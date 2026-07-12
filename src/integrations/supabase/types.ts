@@ -65,6 +65,57 @@ export type Database = {
         }
         Relationships: []
       }
+      book_search_cache: {
+        Row: {
+          created_at: string
+          facebook_user_id: string
+          results: Json
+        }
+        Insert: {
+          created_at?: string
+          facebook_user_id: string
+          results?: Json
+        }
+        Update: {
+          created_at?: string
+          facebook_user_id?: string
+          results?: Json
+        }
+        Relationships: []
+      }
+      book_sessions: {
+        Row: {
+          created_at: string
+          current_page: number
+          facebook_user_id: string
+          id: string
+          identifier: string
+          title: string | null
+          total_pages: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          current_page?: number
+          facebook_user_id: string
+          id?: string
+          identifier: string
+          title?: string | null
+          total_pages?: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          current_page?: number
+          facebook_user_id?: string
+          id?: string
+          identifier?: string
+          title?: string | null
+          total_pages?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
       bot_settings: {
         Row: {
           allow_customer_length_config: boolean
