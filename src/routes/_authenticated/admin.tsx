@@ -126,7 +126,7 @@ function NavPill({ to, icon: Icon, label }: { to: string; icon: any; label: stri
 }
 
 function Analytics() {
-  const [period, setPeriod] = useState<1 | 7 | 30 | 90>(30);
+  const [period, setPeriod] = useState<1 | 7 | 30 | 90>(7);
 
   const { data: rpcData } = useQuery({
     queryKey: ["bot-stats", period],
