@@ -2087,7 +2087,7 @@ async function __fbIsolateGate(): Promise<void> {
 
 async function __fbReserveGlobal(): Promise<void> {
   // Try to reserve a slot in the shared 1-second window. If full, wait and retry.
-  const admin = getAdminClient();
+  const admin = getAdmin();
   for (let attempt = 0; attempt < 40; attempt++) {
     try {
       const { data, error } = await admin.rpc("fb_rate_reserve", {
