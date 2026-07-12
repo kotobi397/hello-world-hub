@@ -1,82 +1,79 @@
+# ميزة: كتب archive.org عبر البوت
 
-## نظرة عامة
+## التدفق للمستخدم
 
-سأضيف 6 ميزات على 3 مراحل في نفس الجلسة. كل مرحلة لها هجرة قاعدة بيانات + edge function + صفحة(صفحات) واجهة.
+1. المستخدم يكتب: «اريد رواية الخوف» أو «كتاب المقدمة».
+2. البوت يبحث في archive.org ويرد بقائمة أول 5 نتائج على شكل أزرار (Generic Template).
+3. المستخدم يضغط زر كتاب → البوت يرسل أول 10 صفحات كصور + زر «الصفحات التالية».
+4. المستخدم يضغط «التالي» → 10 صفحات جديدة، وهكذا حتى نهاية الكتاب.
 
----
+## قاعدة البيانات (هجرة واحدة)
 
-## المرحلة 1 — Broadcasting (إرسال جماعي)
+- `book_sessions`: جلسة قراءة نشطة لكل مستخدم.
+  - `id`, `facebook_user_id` (unique)، `identifier` (معرّف archive.org)، `title`، `total_pages`، `current_page` (افتراضياً 0)، `updated_at`.
+- `book_search_cache`: نتائج آخر بحث لكل مستخدم لربطها بضغطات الأزرار.
+  - `facebook_user_id` (unique)، `results` (jsonb: `[{identifier,title,creator,pages}]`)، `created_at`.
+- GRANT + RLS: قراءة/كتابة لـ `service_role` فقط (الـ edge function).
 
-**قاعدة البيانات:**
-- جدول `broadcasts`: نص الرسالة، الحالة (draft/sending/sent/failed)، عدد المرسل، عدد الفاشل، تاريخ الإنشاء.
-- جدول `broadcast_recipients`: broadcast_id, facebook_user_id, status, error.
+## اكتشاف النية (داخل `messenger`)
 
-**Edge function `broadcast-send`:**
-- يستقبل `broadcast_id`.
-- يجلب كل `facebook_user_id` فريد من جدول `messages` تفاعل آخر 7 أيام (احتراماً لسياسة الـ 24 ساعة لميتا — في الحقيقة 7 أيام مع `MESSAGE_TAG`، 24 ساعة بدونها).
-- يرسل عبر FB Send API مع `messaging_type: MESSAGE_TAG`, `tag: ACCOUNT_UPDATE`.
-- يحدّث عدادات النجاح/الفشل.
+قبل استدعاء الـ LLM، نمرّر النص على تعبير بسيط:
 
-**واجهة `/broadcasts`:**
-- جدول الحملات السابقة.
-- زر "حملة جديدة" → نموذج: نص الرسالة + معاينة عدد المستلمين + زر إرسال.
+```text
+/^\s*(?:اريد|أريد|ابغى|هات|ابعت|ابعث|ممكن)?\s*(كتاب|رواية|مؤلف|قصة)\s+(.{2,})/iu
+```
 
----
+عند التطابق → استدعاء الحاجز الجديد `handleBookRequest(query)` بدل الـ LLM.
 
-## المرحلة 2 — Drip Campaigns + Personas
+## Edge function جديدة: `book-fetcher`
 
-**قاعدة البيانات:**
-- `drip_campaigns`: name, is_active, steps (jsonb مثل `[{day:1, message:"..."},{day:3,...},{day:7,...}]`).
-- `drip_enrollments`: facebook_user_id, campaign_id, enrolled_at, last_step_index, completed.
-- `personas`: name, system_prompt, page_id (nullable), active_from_hour, active_to_hour, priority, is_default.
+مسارات داخلية (لا HTTP خارجي — تُستدعى من `messenger`):
 
-**تعديل `messenger`:**
-- عند أول رسالة لمستخدم جديد → تسجيله في كل حملات drip النشطة.
-- اختيار persona ديناميكياً حسب `page_id` للصفحة + الوقت الحالي، fallback إلى bot_settings.
+- `search(query)`: يستدعي `https://archive.org/advancedsearch.php?q=title:(Q) AND mediatype:texts AND language:(Arabic OR ara)&fl[]=identifier,title,creator,imagecount&rows=5&output=json`، يحفظ النتائج في `book_search_cache`، ويرجع القائمة.
+- `startReading(fbUserId, identifier)`: يجلب `metadata` من `https://archive.org/metadata/{id}` لمعرفة `imagecount`، ينشئ/يحدّث `book_sessions`، ويرجع أول دفعة.
+- `nextBatch(fbUserId)`: يقرأ الجلسة، يرجع الصور من `current_page` إلى `+10`، ويحدّث `current_page`.
 
-**Edge function `drip-runner`:**
-- يستدعى عبر pg_cron كل ساعة.
-- يجد المسجلين الذين حان موعد خطوتهم التالية → يرسل الرسالة → يحدّث `last_step_index`.
+روابط الصور (مباشرة من archive.org، لا نستضيفها):
 
-**واجهات:**
-- `/drips`: قائمة الحملات + نموذج إنشاء (اسم + خطوات).
-- `/personas`: قائمة الشخصيات + نموذج إنشاء.
+```text
+https://archive.org/download/{identifier}/page/n{N}_w800.jpg
+```
 
----
+`N` = 0-indexed حتى `imagecount - 1`. Messenger يجلب الصورة من الرابط مباشرة.
 
-## المرحلة 3 — لوحة التحكم المحسّنة
+## تعديل `messenger`
 
-**قاعدة البيانات:**
-- إضافة عمود `response_time_ms` إلى `messages` (للرسائل من نوع `bot`).
-- جدول `message_feedback`: message_id, rating (1-5 أو 👍/👎)، اختياري.
+1. **معالجة الرسائل النصية**: بعد الفحوصات الحالية، إذا تطابق نمط طلب كتاب → `book-fetcher.search()` → إرسال Generic Template بـ 5 عناصر (كل واحد: عنوان + مؤلف + زر «اقرأ» يحمل `postback: BOOK_READ:{identifier}`).
+2. **معالجة الـ postbacks** (توسيع الـ handler الموجود):
+   - `BOOK_READ:{id}` → `startReading()` → إرسال أول 10 صور + Quick Reply/Button «الصفحات التالية» → postback `BOOK_NEXT`.
+   - `BOOK_NEXT` → `nextBatch()` → إرسال 10 صور جديدة + زر متابعة. عند انتهاء الكتاب: رسالة «انتهى الكتاب 📖» وحذف الجلسة.
+3. إرسال الصور: كل صفحة كـ `attachment: {type: image, payload: {url, is_reusable: false}}`. لتجنب rate limit نضع `await new Promise(r => setTimeout(r, 300))` بين كل صورتين.
 
-**صفحة `/dashboard` محسّنة:**
-- **بطاقات إحصائيات**: إجمالي الرسائل اليوم/الأسبوع، عدد المستخدمين الفريد، متوسط زمن الرد، نسبة الرضا.
-- **مخطط**: الرسائل عبر آخر 30 يوم.
-- **أكثر الأسئلة تكراراً**: تجميع كلمات مفتاحية بسيط من رسائل المستخدمين.
-- **بحث**: حقل يبحث في `messages.message_text` ILIKE + filter حسب `facebook_user_id`.
-- **زر تصدير CSV**: ينزّل كل المحادثات (أو نتائج البحث الحالية).
+## واجهة إدارية (اختيارية — بسيطة)
 
----
+صفحة `/books` تعرض `book_sessions` النشطة (من يقرأ ماذا وعند أي صفحة). صفحة قصيرة للمراقبة فقط.
 
-## ملاحظات تقنية
+## قيود ينبغي إبلاغ المستخدم بها
 
-- جدول `messages` به فعلاً `created_at` و`sender_type` — يكفي حساب زمن الرد من فرق الوقت بين رسالة user وأول رد bot لنفس المستخدم بعدها.
-- كل الـ edge functions الجديدة ستستخدم `service_role` للوصول الكامل.
-- pg_cron يحتاج تفعيل (سأضيفه في الهجرة).
-- صفحات الواجهة الجديدة محمية بـ admin role (موجود مسبقاً عبر `has_role`).
-- ميتا policy: الرسائل الترويجية تتطلب tag مناسب — سأستخدم `ACCOUNT_UPDATE` كافتراضي وأشير في الواجهة لاختيار آخر إن أردت.
+- سياسة Meta 24 ساعة: إرسال الصور المتتالية يعتمد على أن آخر تفاعل للمستخدم خلال 24 ساعة (وهو الحال هنا لأنه يضغط الأزرار).
+- بعض الكتب على archive.org محمية ولا توفّر صور صفحات — سنعالج ذلك بالتحقق من `imagecount > 0` وتخطي مثل هذه النتائج.
+- الأداء: 10 صور × 300ms + وقت جلب Messenger لكل صورة ≈ 5-10 ثوانٍ للدفعة.
 
----
+## الملفات
 
-## الترتيب الزمني للتنفيذ
+**جديدة:**
+- `supabase/migrations/<ts>_book_sessions.sql`
+- `supabase/functions/book-fetcher/index.ts`
+- `src/routes/_authenticated/books.tsx` (اختياري)
+- رابط «Books» في `admin.tsx`
 
-1. هجرة شاملة لكل الجداول الجديدة + عمود response_time_ms + تفعيل pg_cron.
-2. كتابة edge function `broadcast-send`.
-3. كتابة edge function `drip-runner` + جدولته كل ساعة.
-4. تعديل `messenger` لإضافة: تسجيل drip + اختيار persona + حساب response_time + تتبع page_id.
-5. صفحات الواجهة: Broadcasts, Drips, Personas, Dashboard المحسّن.
+**معدّلة:**
+- `supabase/functions/messenger/index.ts` — إضافة كشف النية + معالجة postbacks الجديدة.
 
-**عدد الملفات المتوقعة:** ~12 ملف جديد + 3 تعديلات.
+## ماذا لا يتم في هذه المرحلة
+
+- لا تحليل/تلخيص للكتاب (بناءً على اختيارك).
+- لا OCR ولا إعادة استضافة للصور.
+- لا بحث متقدم (سنة، مؤلف محدد) — فقط بحث بالعنوان.
 
 هل أبدأ التنفيذ؟
