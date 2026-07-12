@@ -1184,6 +1184,20 @@ async function handleEvent(ev: any, pageId: string | null) {
     return;
   }
 
+  // === Detect "give me a book/novel X" intent → search archive.org ===
+  if (text) {
+    const bookMatch = text.match(/^\s*(?:اريد|أريد|ابغى|ابغي|ابعت|ابعث|هات|جيب|ممكن|ابحث(?:\s+لي)?(?:\s+عن)?|اقرأ|اقرا)?\s*(?:كتاب|رواية|قصة|قصه)\s+(.{2,80})$/iu);
+    if (bookMatch) {
+      const query = bookMatch[1].trim().replace(/[?؟.!،,]+$/, "");
+      if (query.length >= 2) {
+        await handleBookSearch(admin, senderId, query, pageId, userMsgStart);
+        return;
+      }
+    }
+  }
+
+
+
   const { data: memRows } = await admin
     .from("user_memory").select("key,value").eq("facebook_user_id", senderId);
   const memBlock = (memRows ?? []).length
