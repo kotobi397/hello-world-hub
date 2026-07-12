@@ -1334,11 +1334,9 @@ async function handleEvent(ev: any, pageId: string | null) {
 
   // Image + edit-intent text → run Gemini image editor and return.
   if (imageUrls.length > 0 && text && shouldEditImage(text)) {
-    const pageToken = await getPageToken(admin, pageId);
+    const pageToken = Deno.env.get("FB_PAGE_ACCESS_TOKEN");
     if (pageToken) {
-      const ok = await editUserImage(admin, senderId, pageId, pageToken, imageUrls[0], text, userMsgStart);
-      if (ok) return;
-      // on failure editUserImage already sent an error message
+      await editUserImage(admin, senderId, pageId, pageToken, imageUrls[0], text, userMsgStart);
       return;
     }
   }
