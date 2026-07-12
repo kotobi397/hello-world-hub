@@ -1101,6 +1101,21 @@ async function handleEvent(ev: any, pageId: string | null) {
     }
   }
 
+  // === Quick-reply handling (same payloads as postbacks; used on Messenger Lite) ===
+  const quickReplyPayload: string | undefined = ev?.message?.quick_reply?.payload;
+  if (quickReplyPayload) {
+    if (quickReplyPayload.startsWith("BOOK_READ:")) {
+      await handleBookRead(admin, senderId, quickReplyPayload.slice("BOOK_READ:".length), pageId);
+      return;
+    }
+    if (quickReplyPayload === "BOOK_NEXT") { await handleBookNext(admin, senderId, pageId); return; }
+    if (quickReplyPayload === "BOOK_STOP") {
+      await admin.from("book_sessions").delete().eq("facebook_user_id", senderId);
+      await sendAndLog(admin, senderId, "تم إيقاف القراءة ✅", pageId);
+      return;
+    }
+  }
+
   let text: string = (ev?.message?.text ?? "").trim();
 
   const attachments: any[] = ev?.message?.attachments ?? [];
@@ -1708,12 +1723,14 @@ async function sendBookImage(senderId: string, url: string): Promise<boolean> {
 }
 
 async function sendContinueButton(senderId: string, text: string, hasNext: boolean) {
-  const buttons: any[] = [];
-  if (hasNext) buttons.push({ type: "postback", title: "الصفحات التالية ⬅️", payload: "BOOK_NEXT" });
-  buttons.push({ type: "postback", title: "إيقاف القراءة ✖️", payload: "BOOK_STOP" });
-  await fbSendRaw(senderId, {
-    attachment: { type: "template", payload: { template_type: "button", text, buttons } },
-  });
+  // Use Quick Replies instead of button/generic templates — they render reliably
+  // on Messenger Lite and older Messenger versions where templates often don't.
+  const quick_replies: any[] = [];
+  if (hasNext) {
+    quick_replies.push({ content_type: "text", title: "الصفحات التالية ⬅️", payload: "BOOK_NEXT" });
+  }
+  quick_replies.push({ content_type: "text", title: "إيقاف القراءة ✖️", payload: "BOOK_STOP" });
+  await fbSendRaw(senderId, { text, quick_replies });
 }
 
 async function handleBookSearch(admin: any, senderId: string, query: string, pageId: string | null, userMsgStart: number) {
@@ -1727,14 +1744,20 @@ async function handleBookSearch(admin: any, senderId: string, query: string, pag
     facebook_user_id: senderId, results, created_at: new Date().toISOString(),
   }, { onConflict: "facebook_user_id" });
 
-  const elements = results.map((r) => ({
-    title: r.title.slice(0, 80),
-    subtitle: [r.creator, `${r.pages} صفحة`].filter(Boolean).join(" · ").slice(0, 80),
-    buttons: [{ type: "postback", title: "اقرأ 📖", payload: `BOOK_READ:${r.identifier}` }],
-  }));
-  await fbSendRaw(senderId, {
-    attachment: { type: "template", payload: { template_type: "generic", elements } },
+  // Send a plain-text numbered list + Quick Replies so it works on Messenger Lite
+  // (generic/carousel templates are not rendered there).
+  const lines = results.map((r, i) => {
+    const meta = [r.creator, `${r.pages} صفحة`].filter(Boolean).join(" · ");
+    return `${i + 1}. ${r.title}${meta ? `\n   ${meta}` : ""}`;
   });
+  const text = `📚 نتائج البحث عن «${query}»:\n\n${lines.join("\n\n")}\n\nاضغط رقم الكتاب للقراءة 👇`;
+  const quick_replies = results.slice(0, 11).map((r, i) => ({
+    content_type: "text",
+    title: `${i + 1} 📖`,
+    payload: `BOOK_READ:${r.identifier}`,
+  }));
+  await fbSendRaw(senderId, { text: text.slice(0, 2000), quick_replies });
+
   await admin.from("messages").insert({
     facebook_user_id: senderId, sender_type: "bot",
     message_text: `[📚 ${results.length} نتائج للبحث: ${query}]`,
