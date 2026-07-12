@@ -1826,14 +1826,17 @@ async function sendBookImage(senderId: string, url: string): Promise<boolean> {
 }
 
 async function sendContinueButton(senderId: string, text: string, hasNext: boolean) {
-  // Use Quick Replies instead of button/generic templates — they render reliably
-  // on Messenger Lite and older Messenger versions where templates often don't.
+  // Quick Replies for Messenger; plain-text hint for Facebook Lite / clients
+  // that don't render quick replies at all.
+  const hint = hasNext
+    ? "\n\n➡️ اكتب «التالي» للصفحات التالية، أو «توقف» للإنهاء."
+    : "\n\n✖️ اكتب «توقف» للإنهاء.";
   const quick_replies: any[] = [];
   if (hasNext) {
     quick_replies.push({ content_type: "text", title: "الصفحات التالية ⬅️", payload: "BOOK_NEXT" });
   }
   quick_replies.push({ content_type: "text", title: "إيقاف القراءة ✖️", payload: "BOOK_STOP" });
-  await fbSendRaw(senderId, { text, quick_replies });
+  await fbSendRaw(senderId, { text: (text + hint).slice(0, 2000), quick_replies });
 }
 
 async function handleBookSearch(admin: any, senderId: string, query: string, pageId: string | null, userMsgStart: number, mode: SearchMode = "any") {
