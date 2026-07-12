@@ -1101,6 +1101,21 @@ async function handleEvent(ev: any, pageId: string | null) {
     }
   }
 
+  // === Quick-reply handling (same payloads as postbacks; used on Messenger Lite) ===
+  const quickReplyPayload: string | undefined = ev?.message?.quick_reply?.payload;
+  if (quickReplyPayload) {
+    if (quickReplyPayload.startsWith("BOOK_READ:")) {
+      await handleBookRead(admin, senderId, quickReplyPayload.slice("BOOK_READ:".length), pageId);
+      return;
+    }
+    if (quickReplyPayload === "BOOK_NEXT") { await handleBookNext(admin, senderId, pageId); return; }
+    if (quickReplyPayload === "BOOK_STOP") {
+      await admin.from("book_sessions").delete().eq("facebook_user_id", senderId);
+      await sendAndLog(admin, senderId, "تم إيقاف القراءة ✅", pageId);
+      return;
+    }
+  }
+
   let text: string = (ev?.message?.text ?? "").trim();
 
   const attachments: any[] = ev?.message?.attachments ?? [];
