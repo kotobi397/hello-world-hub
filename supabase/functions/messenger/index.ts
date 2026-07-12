@@ -1199,13 +1199,23 @@ async function handleEvent(ev: any, pageId: string | null) {
     return;
   }
 
-  // === Detect "give me a book/novel X" intent → search archive.org ===
+  // === Detect book / author intent → search archive.org ===
   if (text) {
+    // author intent: "كاتب فلان" / "مؤلف فلان" / "كتب فلان" / "روايات فلان" / "أعمال فلان"
+    const authorMatch = text.match(/^\s*(?:اريد|أريد|ابغى|ابغي|ابعت|ابعث|هات|جيب|ممكن|ابحث(?:\s+لي)?(?:\s+عن)?)?\s*(?:كاتب|مؤلف|كتب|روايات|اعمال|أعمال)\s+(.{2,80})$/iu);
+    if (authorMatch) {
+      const query = authorMatch[1].trim().replace(/[?؟.!،,]+$/, "");
+      if (query.length >= 2) {
+        await handleBookSearch(admin, senderId, query, pageId, userMsgStart, "author");
+        return;
+      }
+    }
+    // title / generic book intent
     const bookMatch = text.match(/^\s*(?:اريد|أريد|ابغى|ابغي|ابعت|ابعث|هات|جيب|ممكن|ابحث(?:\s+لي)?(?:\s+عن)?|اقرأ|اقرا)?\s*(?:كتاب|رواية|قصة|قصه)\s+(.{2,80})$/iu);
     if (bookMatch) {
       const query = bookMatch[1].trim().replace(/[?؟.!،,]+$/, "");
       if (query.length >= 2) {
-        await handleBookSearch(admin, senderId, query, pageId, userMsgStart);
+        await handleBookSearch(admin, senderId, query, pageId, userMsgStart, "any");
         return;
       }
     }
